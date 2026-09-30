@@ -532,12 +532,83 @@ begin
   return public._eliminate_player(p_game_id, me, 'abandon');
 end; $function$;
 
+
+-- ------------------------------------------------------------- stickers ----
+create table public.emoji_catalogue (emoji text not null, famille text not null, prix integer not null, rang integer default 0 not null, actif boolean default true not null, PRIMARY KEY (emoji));
+create table public.game_emojis (id bigint generated always as identity, game_id uuid not null, de uuid not null, a uuid not null, emoji text not null, prix integer not null, created_at timestamp with time zone default now() not null, PRIMARY KEY (id));
+alter table public.emoji_catalogue enable row level security;
+alter table public.game_emojis enable row level security;
+
+create or replace function public.reglage_bool(p_cle text, p_defaut boolean) returns boolean language plpgsql stable security definer set search_path to 'public' as $function$
+declare v jsonb;
+begin
+  v := public.reglage(p_cle);
+  if v is null or jsonb_typeof(v) <> 'boolean' then return p_defaut; end if;
+  return (v #>> '{}')::boolean;
+exception when others then return p_defaut;
+end $function$;
+
+create or replace function public._emojis_autorises() returns text[] language sql stable set search_path to 'public' as $function$
+  select coalesce(array_agg(emoji), '{}') from public.emoji_catalogue where actif
+$function$;
+
+create or replace function public.envoyer_emoji(p_game_id uuid, p_emoji text, p_cible uuid) returns json language plpgsql security definer set search_path to 'public' as $function$
+declare
+  me uuid := auth.uid();
+  v_prix int;
+  v_bal int;
+  v_statut text;
+  v_dernier timestamptz;
+begin
+  if me is null then return json_build_object('ok', false, 'error', 'not_authenticated'); end if;
+  if not public.reglage_bool('emoji_actif', true) then
+    return json_build_object('ok', false, 'error', 'emojis_desactives');
+  end if;
+  if p_emoji is null or not (p_emoji = any(public._emojis_autorises())) then
+    return json_build_object('ok', false, 'error', 'emoji_inconnu');
+  end if;
+
+  select status into v_statut from public.games where id = p_game_id;
+  if v_statut is distinct from 'playing' then return json_build_object('ok', false, 'error', 'not_playing'); end if;
+  if not exists (select 1 from public.game_players where game_id = p_game_id and player_id = me) then
+    return json_build_object('ok', false, 'error', 'pas_a_la_table');
+  end if;
+  if exists (select 1 from public.game_players where game_id = p_game_id and player_id = me and rang is not null) then
+    return json_build_object('ok', false, 'error', 'deja_arrive');
+  end if;
+  if p_cible is null or p_cible = me
+     or not exists (select 1 from public.game_players where game_id = p_game_id and player_id = p_cible) then
+    return json_build_object('ok', false, 'error', 'cible_invalide');
+  end if;
+
+  select max(created_at) into v_dernier from public.game_emojis where game_id = p_game_id and de = me;
+  if v_dernier is not null and v_dernier > now() - interval '3 seconds' then
+    return json_build_object('ok', false, 'error', 'trop_rapide');
+  end if;
+
+  select greatest(0, prix) into v_prix from public.emoji_catalogue where emoji = p_emoji and actif;
+  select balance into v_bal from public.profiles where id = me and not coalesce(blocked, false) for update;
+  if v_bal is null then return json_build_object('ok', false, 'error', 'blocked'); end if;
+  if v_bal < v_prix then return json_build_object('ok', false, 'error', 'insufficient', 'prix', v_prix); end if;
+
+  if v_prix > 0 then
+    update public.profiles set balance = balance - v_prix where id = me returning balance into v_bal;
+    insert into public.transactions (player_id, game_id, type, amount, balance_after)
+    values (me, p_game_id, 'emoji', -v_prix, v_bal);
+  end if;
+
+  insert into public.game_emojis (game_id, de, a, emoji, prix) values (p_game_id, me, p_cible, p_emoji, v_prix);
+  return json_build_object('ok', true, 'prix', v_prix, 'solde', v_bal);
+end $function$;
+
+insert into public.emoji_catalogue (emoji, famille, prix, rang) values ('👍', 'taquiner', 10, 1), ('💣', 'taquiner', 10, 2);
+
 -- Droits comme en production (vérifié le 30/09/2026) : les fonctions « _ »
 -- ne sont exécutables que par postgres ; celles du jeu par « authenticated ».
 grant usage on schema public to anon, authenticated;
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function public.roll_dice(uuid), public.move_pawn(uuid, integer), public.force_turn(uuid),
-  public.force_move(uuid), public.leave_game(uuid) to authenticated;
+  public.force_move(uuid), public.leave_game(uuid), public.envoyer_emoji(uuid, text, uuid) to authenticated;
 -- Supabase donne par défaut EXECUTE aux joueurs sur les NOUVELLES fonctions :
 -- on le reproduit pour vérifier que la migration du serveur le retire bien.
 alter default privileges in schema public grant execute on functions to anon, authenticated;

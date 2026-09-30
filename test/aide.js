@@ -23,7 +23,9 @@ export async function creerBaseDeTest() {
   const su = new pg.Client({ connectionString: url });
   await su.connect();
   await su.query(fs.readFileSync(path.join(RACINE, 'test/sql/00_base_locale.sql'), 'utf8'));
-  await su.query(fs.readFileSync(path.join(RACINE, 'sql/01_serveur_jeu.sql'), 'utf8'));
+  for (const f of fs.readdirSync(path.join(RACINE, 'sql')).filter((x) => x.endsWith('.sql')).sort()) {
+    await su.query(fs.readFileSync(path.join(RACINE, 'sql', f), 'utf8'));
+  }
   // En local seulement : le rôle du serveur peut se connecter (en production,
   // c'est Jordan qui lui donne un mot de passe, dans Supabase).
   await su.query(`alter role serveur_jeu login password 'test'`);

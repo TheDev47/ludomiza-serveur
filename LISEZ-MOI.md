@@ -25,9 +25,10 @@ Téléphone → serveur :
 | `{t:'lancer', n}` | Lancer le dé |
 | `{t:'jouer', pion, n}` | Jouer le pion 1 à 4 |
 | `{t:'quitter', n}` | Abandonner |
+| `{t:'emoji', emoji, cible, n}` | Envoyer un sticker (payé par la base, montré à toute la table) |
 | `{t:'ping', c}` | Mesurer la latence |
 
-Serveur → téléphone : `bienvenue`, `refus`, `etat` (même forme que la réponse de `move_pawn` : `game` + `seats`), `reponse` (résultat de SON action), `pong`.
+Serveur → téléphone : `bienvenue`, `refus`, `etat` (même forme que la réponse de `move_pawn` : `game` + `seats`), `reponse` (résultat de SON action), `emoji` (sticker envoyé à la table), `pong`.
 
 ## Réglages (variables d'environnement)
 

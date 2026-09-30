@@ -31,6 +31,13 @@ export function creerBase(adresse, { ssl, max = 8 } = {}) {
       );
       return r.rows[0].r;
     },
+    async emoji(joueur, partie, emoji, cible) {
+      const r = await pool.query(
+        'select public._serveur_emoji($1::uuid, $2::uuid, $3, $4::uuid) as r',
+        [joueur, partie, emoji, cible],
+      );
+      return r.rows[0].r;
+    },
     async fermer() {
       await pool.end();
     },

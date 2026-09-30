@@ -1,6 +1,7 @@
 // Serveur de jeu LudoMiza.
 //
-// Rôle : « messager rapide » entre les téléphones et Supabase.
+// Rôle : « messager rapide » entre les téléphones et Supabase (lancers, coups,
+// abandons, stickers).
 //   - chaque téléphone garde UNE connexion ouverte (WebSocket) pendant la partie ;
 //   - « je lance » / « je joue le pion 3 » arrive ici, part à la base en un seul
 //     appel (les règles restent dans Supabase), et l'état à jour est renvoyé
@@ -16,7 +17,7 @@ import http from 'node:http';
 import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 // Délais appliqués par la base (force_turn / force_move). Le serveur déclenche
 // l'action automatique juste après ; la base revérifie de toute façon.
@@ -54,7 +55,7 @@ export function creerServeur({
   journal = console,
 } = {}) {
   const parties = new Map();
-  const stats = { demarre: new Date().toISOString(), actions: 0, forces: 0, erreursBase: 0, msBaseTotal: 0 };
+  const stats = { demarre: new Date().toISOString(), actions: 0, forces: 0, stickers: 0, erreursBase: 0, msBaseTotal: 0 };
 
   // ------------------------------------------------------------- parties ----
   function obtenir(id) {
@@ -173,6 +174,33 @@ export function creerServeur({
     });
   }
 
+  // Sticker : payé et enregistré par la base (envoyer_emoji), puis montré
+  // aussitôt à toute la table — plus d'attente des notifications de Supabase.
+  async function envoyerSticker(ws, m) {
+    const p = ws.partie;
+    const valide = typeof m.emoji === 'string' && m.emoji.length > 0 && m.emoji.length <= 16
+      && typeof m.cible === 'string' && UUID.test(m.cible);
+    if (!valide) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'cible_invalide' }); return; }
+    const t0 = performance.now();
+    let r;
+    try {
+      r = await base.emoji(ws.uid, p.id, m.emoji, m.cible);
+    } catch (e) {
+      stats.erreursBase++;
+      journal.error(`[partie ${p.id}] sticker :`, e.message);
+      envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'base_indisponible' });
+      return;
+    }
+    stats.msBaseTotal += performance.now() - t0;
+    stats.stickers++;
+    const res = r?.resultat ?? {};
+    if (res.ok === true && r.ligne) {
+      const l = r.ligne;
+      diffuser(p, { t: 'emoji', partie: p.id, ligne: { id: l.id, de: l.de, a: l.a, emoji: l.emoji, prix: l.prix, created_at: l.created_at } });
+    }
+    envoyer(ws, { t: 'reponse', n: m.n, ok: res.ok === true, erreur: res.ok === true ? undefined : res.error, resultat: res });
+  }
+
   async function accueillir(ws, m) {
     const uid = await verifierJeton(m.jeton);
     if (!uid) {
@@ -259,7 +287,7 @@ export function creerServeur({
       res.end(JSON.stringify({
         ok: true, version: VERSION, demarre: stats.demarre,
         connexions: wss.clients.size, parties: parties.size,
-        actions: stats.actions, forces: stats.forces, erreursBase: stats.erreursBase,
+        actions: stats.actions, forces: stats.forces, stickers: stats.stickers, erreursBase: stats.erreursBase,
         msBaseMoyen: nb ? Math.round(stats.msBaseTotal / nb) : null,
       }));
       return;
@@ -305,6 +333,10 @@ export function creerServeur({
             break;
           case 'bonjour':
             await accueillir(ws, m);
+            break;
+          case 'emoji':
+            if (!ws.partie) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'non_identifie' }); break; }
+            await envoyerSticker(ws, m);
             break;
           case 'lancer':
           case 'quitter':

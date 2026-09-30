@@ -184,3 +184,36 @@ test('charge : 20 parties rapides en même temps (40 téléphones)', { timeout: 
   assert.equal(rows[0].n, 20, 'chaque partie a payé exactement un gagnant');
   robots.forEach((r) => r.fermer());
 });
+
+test('sticker : payé par la base puis montré tout de suite à toute la table', async () => {
+  const joueurs = await creerJoueurs(bd.su, 3);
+  const partie = await creerPartie(bd.su, joueurs, { mise: 100 });
+  const robots = await Promise.all(joueurs.map((j) => new Robot(j, { dort: true }).connecter(url, partie)));
+  const recus = robots.map(() => []);
+  robots.forEach((r, i) => r.ws.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'emoji') recus[i].push(m); }));
+  const t0 = Date.now();
+  robots[0].envoyer({ t: 'emoji', emoji: '💣', cible: joueurs[1], n: 50 });
+  await attendre(() => recus.every((l) => l.length === 1), 3000);
+  const ecoule = Date.now() - t0;
+  const rep = await attendre(() => robots[0].reponses.find((x) => x.n === 50));
+  assert.equal(rep.ok, true);
+  for (const l of recus) {
+    assert.equal(l[0].ligne.emoji, '💣');
+    assert.equal(l[0].ligne.de, joueurs[0]);
+    assert.equal(l[0].ligne.a, joueurs[1]);
+  }
+  const { rows } = await bd.su.query('select balance from profiles where id = $1', [joueurs[0]]);
+  assert.equal(rows[0].balance, 10_000 - 100 - 10, 'mise + prix du sticker');
+  // délai de 3 s de la base toujours respecté
+  robots[0].envoyer({ t: 'emoji', emoji: '👍', cible: joueurs[2], n: 51 });
+  const rep2 = await attendre(() => robots[0].reponses.find((x) => x.n === 51));
+  assert.equal(rep2.ok, false);
+  assert.equal(rep2.erreur, 'trop_rapide');
+  // sticker inconnu refusé
+  await new Promise((r) => setTimeout(r, 3100));
+  robots[0].envoyer({ t: 'emoji', emoji: '🦄', cible: joueurs[2], n: 52 });
+  const rep3 = await attendre(() => robots[0].reponses.find((x) => x.n === 52));
+  assert.equal(rep3.erreur, 'emoji_inconnu');
+  console.log(`  sticker vu par les 3 téléphones en ${ecoule} ms`);
+  robots.forEach((r) => r.fermer());
+});
