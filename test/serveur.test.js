@@ -217,3 +217,44 @@ test('sticker : payé par la base puis montré tout de suite à toute la table',
   console.log(`  sticker vu par les 3 téléphones en ${ecoule} ms`);
   robots.forEach((r) => r.fermer());
 });
+
+test('présence : chacun sait qui est connecté à la table', async () => {
+  const joueurs = await creerJoueurs(bd.su, 2);
+  const partie = await creerPartie(bd.su, joueurs);
+  const presences = [];
+  const a = await new Robot(joueurs[0], { dort: true }).connecter(url, partie);
+  a.ws.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'presence') presences.push(m.connectes); });
+  const b = await new Robot(joueurs[1], { dort: true }).connecter(url, partie);
+  await attendre(() => presences.some((l) => l.length === 2), 2000);
+  b.fermer();
+  await attendre(() => presences.at(-1)?.length === 1 && presences.at(-1)[0] === joueurs[0], 2000);
+  a.fermer();
+});
+
+test('salle d’attente et revanche : un changement fait par Supabase est annoncé tout de suite', async () => {
+  const joueurs = await creerJoueurs(bd.su, 2);
+  // salle d'attente : l'hôte attend, l'autre joueur rejoint
+  const { rows } = await bd.su.query(`insert into games (code, host_id, mise, max_players, mode) values ('SALLE1', $1, 100, 2, 'fast') returning id`, [joueurs[0]]);
+  const salle = rows[0].id;
+  await bd.su.query(`insert into game_players (game_id, player_id, color, play_order) values ($1, $2, 'yellow', 1)`, [salle, joueurs[0]]);
+  const hote = await new Robot(joueurs[0], { dort: true }).connecter(url, salle);
+  await bd.su.query(`insert into game_players (game_id, player_id, color, play_order) values ($1, $2, 'blue', 2)`, [salle, joueurs[1]]);
+  const t0 = Date.now();
+  const invite = await new Robot(joueurs[1], { dort: true }).connecter(url, salle);   // son arrivée déclenche l'annonce
+  await attendre(() => hote.etat?.seats?.length === 2, 2000);
+  console.log(`  arrivée dans la salle vue par l'hôte en ${Date.now() - t0} ms`);
+
+  // revanche : partie terminée, l'un propose une revanche par Supabase
+  await bd.su.query(`update games set status = 'finished' where id = $1`, [salle]);
+  invite.envoyer({ t: 'actualiser' });
+  await attendre(() => hote.etat?.game?.status === 'finished', 2000);
+  const { rows: r2 } = await bd.su.query(`insert into games (code, host_id, mise, max_players, mode, rematch_of) values ('REV001', $1, 100, 2, 'fast', $2) returning id`, [joueurs[1], salle]);
+  await bd.su.query(`insert into game_players (game_id, player_id, color, play_order) values ($1, $2, 'yellow', 1)`, [r2[0].id, joueurs[1]]);
+  const t1 = Date.now();
+  invite.envoyer({ t: 'actualiser' });
+  const e = await attendre(() => hote.etat?.revanche?.id === r2[0].id && hote.etat, 2000);
+  assert.equal(e.revanche.status, 'waiting');
+  assert.deepEqual(e.revanche.game_players, [{ player_id: joueurs[1] }]);
+  console.log(`  revanche vue par l'autre joueur en ${Date.now() - t1} ms`);
+  hote.fermer(); invite.fermer();
+});

@@ -26,9 +26,10 @@ Téléphone → serveur :
 | `{t:'jouer', pion, n}` | Jouer le pion 1 à 4 |
 | `{t:'quitter', n}` | Abandonner |
 | `{t:'emoji', emoji, cible, n}` | Envoyer un sticker (payé par la base, montré à toute la table) |
+| `{t:'actualiser'}` | « J'ai changé la partie par Supabase » (rejoindre, revanche…) : le serveur relit et prévient la table |
 | `{t:'ping', c}` | Mesurer la latence |
 
-Serveur → téléphone : `bienvenue`, `refus`, `etat` (même forme que la réponse de `move_pawn` : `game` + `seats`), `reponse` (résultat de SON action), `emoji` (sticker envoyé à la table), `pong`.
+Serveur → téléphone : `bienvenue`, `refus`, `etat` (même forme que la réponse de `move_pawn` : `game` + `seats`), `reponse` (résultat de SON action), `emoji` (sticker envoyé à la table), `presence` (qui est connecté à la table), `pong`. L'état d'une partie terminée contient aussi `revanche` (revanche en cours et joueurs déjà assis).
 
 ## Réglages (variables d'environnement)
 

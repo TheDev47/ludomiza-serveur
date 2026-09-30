@@ -17,7 +17,7 @@ import http from 'node:http';
 import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 
 // Délais appliqués par la base (force_turn / force_move). Le serveur déclenche
 // l'action automatique juste après ; la base revérifie de toute façon.
@@ -88,7 +88,17 @@ export function creerServeur({
   }
 
   function messageEtat(p, cause, extra = {}) {
-    return { t: 'etat', partie: p.id, game: p.etat.game, seats: p.etat.seats, cause, ...extra, s: Date.now() };
+    return { t: 'etat', partie: p.id, game: p.etat.game, seats: p.etat.seats, revanche: p.etat.revanche ?? null, cause, ...extra, s: Date.now() };
+  }
+
+  // Présence : qui, à cette table, a une connexion ouverte avec le serveur.
+  // Envoyé à chaque arrivée ou départ ; le téléphone attend quelques secondes
+  // avant d'afficher « hors ligne » (une reconnexion rapide ne se voit pas).
+  function connectes(p) {
+    return [...new Set([...p.clients].filter((w) => w.readyState === 1 && w.uid).map((w) => w.uid))];
+  }
+  function diffuserPresence(p) {
+    diffuser(p, { t: 'presence', partie: p.id, connectes: connectes(p) });
   }
 
   // Nouvel état venu de la base : on le garde, on le diffuse s'il a changé,
@@ -96,7 +106,7 @@ export function creerServeur({
   function recevoirEtat(p, etat, cause, extra = {}, { toujours = false, minuterie = true } = {}) {
     if (!etat?.game) return;
     if (etat.maintenant) p.decalage = Date.parse(etat.maintenant) - Date.now();
-    const sig = JSON.stringify([etat.game, etat.seats]);
+    const sig = JSON.stringify([etat.game, etat.seats, etat.revanche ?? null]);
     const change = sig !== p.sig;
     if (change) {
       p.sig = sig;
@@ -227,7 +237,11 @@ export function creerServeur({
     }
     if (ws.readyState !== 1) return;
 
-    if (ws.partie && ws.partie.id !== m.partie) ws.partie.clients.delete(ws);
+    if (ws.partie && ws.partie.id !== m.partie) {
+      const ancienne = ws.partie;
+      ancienne.clients.delete(ws);
+      diffuserPresence(ancienne);
+    }
     const p = obtenir(m.partie);
     ws.uid = uid;
     ws.partie = p;
@@ -236,6 +250,18 @@ export function creerServeur({
     if (!p.occupe) recevoirEtat(p, e, 'externe');
     else planifier(p);
     envoyer(ws, messageEtat(p.etat ? p : { ...p, etat: e }, 'initial'));
+    diffuserPresence(p);
+  }
+
+  // Un téléphone vient de changer la partie par Supabase (rejoindre, revanche,
+  // retrait…) : on relit tout de suite pour prévenir la table sans attendre
+  // le prochain coup d'œil.
+  function actualiser(ws) {
+    const p = ws.partie;
+    return enFile(p, async () => {
+      const [e] = await base.etat([p.id]);
+      if (e) recevoirEtat(p, e, 'externe');
+    });
   }
 
   // -------------------------------------------------- coup d'œil régulier ----
@@ -309,7 +335,11 @@ export function creerServeur({
     ws.compte = 0;
     ws.on('pong', () => { ws.vivant = true; });
     ws.on('error', () => {});
-    ws.on('close', () => { if (ws.partie) ws.partie.clients.delete(ws); });
+    ws.on('close', () => {
+      if (!ws.partie) return;
+      ws.partie.clients.delete(ws);
+      diffuserPresence(ws.partie);
+    });
 
     ws.on('message', async (donnees) => {
       ws.vivant = true;
@@ -333,6 +363,9 @@ export function creerServeur({
             break;
           case 'bonjour':
             await accueillir(ws, m);
+            break;
+          case 'actualiser':
+            if (ws.partie) await actualiser(ws);
             break;
           case 'emoji':
             if (!ws.partie) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'non_identifie' }); break; }
