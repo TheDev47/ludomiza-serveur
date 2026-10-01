@@ -612,3 +612,11 @@ grant execute on function public.roll_dice(uuid), public.move_pawn(uuid, integer
 -- Supabase donne par défaut EXECUTE aux joueurs sur les NOUVELLES fonctions :
 -- on le reproduit pour vérifier que la migration du serveur le retire bien.
 alter default privileges in schema public grant execute on functions to anon, authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Tables hors partie (ajoutées le 01/10/2026 pour les signaux de 04_serveur_signaux.sql).
+-- Structure réduite aux colonnes utiles, conforme à la production.
+create table if not exists public.notifications (id uuid default gen_random_uuid() primary key, user_id uuid not null, type text not null, actor_id uuid, game_id uuid, data jsonb default '{}'::jsonb, read boolean default false not null, created_at timestamp with time zone default now() not null);
+create table if not exists public.friendships (id uuid default gen_random_uuid() primary key, requester_id uuid not null, addressee_id uuid not null, status text default 'pending' not null, created_at timestamp with time zone default now() not null);
+create table if not exists public.payment_requests (id uuid default gen_random_uuid() primary key, user_id uuid not null, kind text not null, amount integer not null, operator text not null, phone text not null, status text default 'pending', created_at timestamp with time zone default now());
+create table if not exists public.support_chat (id uuid default gen_random_uuid() primary key, user_id uuid not null, sender text not null, body text not null, read_by_user boolean default false not null, read_by_admin boolean default false not null, created_at timestamp with time zone default now() not null);

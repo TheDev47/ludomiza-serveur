@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
+import WebSocket from 'ws';
 import { creerBase } from '../src/base.js';
 import { creerServeur, echeance } from '../src/application.js';
 import {
@@ -257,4 +258,110 @@ test('salle d’attente et revanche : un changement fait par Supabase est annonc
   assert.deepEqual(e.revanche.game_players, [{ player_id: joueurs[1] }]);
   console.log(`  revanche vue par l'autre joueur en ${Date.now() - t1} ms`);
   hote.fermer(); invite.fermer();
+});
+
+// ------------------------------------------------------- ligne directe ----
+// Un téléphone hors partie : il ouvre sa session et note les signaux reçus.
+function ouvrirSession(uid, jeton = jetonDe(uid)) {
+  return new Promise((ok, ko) => {
+    const ws = new WebSocket(url);
+    const s = { ws, uid, signaux: [], refus: null, enLigne: null };
+    ws.on('open', () => ws.send(JSON.stringify({ t: 'session', jeton })));
+    ws.on('error', ko);
+    ws.on('message', (d) => {
+      const m = JSON.parse(d.toString());
+      if (m.t === 'session_ok') ok(s);
+      if (m.t === 'refus') { s.refus = m.raison; ok(s); }
+      if (m.t === 'signaux') s.signaux.push(...m.liste);
+      if (m.t === 'en_ligne') s.enLigne = m.ids;
+    });
+  });
+}
+const aRecu = (s, sujet, cle) => s.signaux.some(([x, c]) => x === sujet && (cle === undefined || c === cle));
+
+test('ligne directe : jeton faux refusé', async () => {
+  const s = await ouvrirSession('x', 'faux');
+  assert.equal(s.refus, 'jeton');
+});
+
+test('ligne directe : chaque joueur ne reçoit que ses propres signaux, en moins de 2 s', async () => {
+  const [a, b] = await creerJoueurs(bd.su, 2);
+  const sa = await ouvrirSession(a);
+  const sb = await ouvrirSession(b);
+  const t0 = Date.now();
+  await bd.su.query(`insert into transactions (player_id, type, amount, balance_after) values ($1, 'gain', 100, 10100)`, [a]);
+  await attendre(() => aRecu(sa, 'solde'), 3000);
+  console.log(`  signal « solde » reçu en ${Date.now() - t0} ms`);
+  await bd.su.query(`insert into notifications (user_id, type) values ($1, 'test')`, [a]);
+  await bd.su.query(`insert into payment_requests (user_id, kind, amount, operator, phone) values ($1, 'deposit', 500, 'mtn', '677000000')`, [a]);
+  await bd.su.query(`insert into support_chat (user_id, sender, body) values ($1, 'admin', 'bonjour')`, [a]);
+  await attendre(() => aRecu(sa, 'notifications') && aRecu(sa, 'paiements') && aRecu(sa, 'support'), 3000);
+  // une demande d'ami prévient les deux
+  await bd.su.query(`insert into friendships (requester_id, addressee_id) values ($1, $2)`, [a, b]);
+  await attendre(() => aRecu(sa, 'amis') && aRecu(sb, 'amis'), 3000);
+  assert.ok(!aRecu(sb, 'solde') && !aRecu(sb, 'notifications') && !aRecu(sb, 'paiements') && !aRecu(sb, 'support'),
+    'B ne doit rien recevoir de ce qui concerne A');
+  sa.ws.close(); sb.ws.close();
+});
+
+test('ligne directe : salon pour tous, partie pour les joueurs assis, rien à chaque coup', async () => {
+  const [a, b, c] = await creerJoueurs(bd.su, 3);
+  const [sa, sb, sc] = await Promise.all([ouvrirSession(a), ouvrirSession(b), ouvrirSession(c)]);
+  const { rows } = await bd.su.query(`insert into games (code, host_id, mise, max_players, mode) values ('SIG001', $1, 100, 2, 'fast') returning id`, [a]);
+  const g = rows[0].id;
+  await bd.su.query(`insert into game_players (game_id, player_id, color, play_order) values ($1, $2, 'yellow', 1)`, [g, a]);
+  await attendre(() => aRecu(sa, 'salon') && aRecu(sb, 'salon') && aRecu(sc, 'salon'), 3000);
+  await bd.su.query(`insert into game_players (game_id, player_id, color, play_order) values ($1, $2, 'blue', 2)`, [g, b]);
+  await attendre(() => aRecu(sa, 'partie', g) && aRecu(sb, 'partie', g), 3000);
+  assert.ok(!aRecu(sc, 'partie', g), 'C n’est pas assis : pas de signal « partie »');
+
+  // Une fois lancée, un coup (mise à jour de la partie) n'écrit AUCUN signal.
+  await bd.su.query(`update games set status = 'playing' where id = $1`, [g]);
+  const { rows: [{ n: avant }] } = await bd.su.query('select count(*)::int as n from evenements_serveur');
+  await bd.su.query(`update games set current_turn = $2, last_dice = 4, must_move = true where id = $1`, [g, a]);
+  await bd.su.query(`update game_players set pawns = '{0,-1,-1,-1}' where game_id = $1 and player_id = $2`, [g, a]);
+  const { rows: [{ n: apres }] } = await bd.su.query('select count(*)::int as n from evenements_serveur');
+  assert.equal(apres, avant, 'un coup ne doit pas écrire de signal');
+  sa.ws.close(); sb.ws.close(); sc.ws.close();
+});
+
+test('ligne directe : « qui est en ligne ? » ne répond que pour les sessions ouvertes', async () => {
+  const [a, b, c] = await creerJoueurs(bd.su, 3);
+  const sa = await ouvrirSession(a);
+  const sb = await ouvrirSession(b);
+  sa.ws.send(JSON.stringify({ t: 'en_ligne', ids: [a, b, c] }));
+  await attendre(() => sa.enLigne, 2000);
+  assert.deepEqual(new Set(sa.enLigne), new Set([a, b]));
+  sb.ws.close();
+  await attendre(() => !serveur.sessions.has(b), 2000);
+  sa.enLigne = null;
+  sa.ws.send(JSON.stringify({ t: 'en_ligne', ids: [a, b, c] }));
+  await attendre(() => sa.enLigne, 2000);
+  assert.deepEqual(sa.enLigne, [a]);
+  sa.ws.close();
+});
+
+test('sûreté : un journal de signaux en panne ne bloque jamais une transaction', async () => {
+  const [a] = await creerJoueurs(bd.su, 1);
+  await bd.su.query('alter table evenements_serveur rename to evenements_serveur_hs');
+  try {
+    await bd.su.query(`insert into transactions (player_id, type, amount, balance_after) values ($1, 'gain', 50, 10050)`, [a]);
+    await bd.su.query(`insert into notifications (user_id, type) values ($1, 'test')`, [a]);
+    const { rows } = await bd.su.query(`select count(*)::int as n from transactions where player_id = $1`, [a]);
+    assert.equal(rows[0].n, 1);
+  } finally {
+    await bd.su.query('alter table evenements_serveur_hs rename to evenements_serveur');
+  }
+});
+
+test('droits : le rôle serveur_jeu lit les signaux par la fonction, jamais la table', async () => {
+  const c = new pg.Client({ connectionString: bd.urlServeur });
+  await c.connect();
+  try {
+    const r = await c.query('select public._serveur_evenements(null) as e');
+    assert.ok(typeof r.rows[0].e.dernier === 'number');
+    await assert.rejects(c.query('select * from evenements_serveur'), /permission denied/);
+  } finally {
+    await c.end();
+  }
 });

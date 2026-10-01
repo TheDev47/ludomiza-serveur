@@ -9,6 +9,8 @@ Petit programme Node.js qui rend les parties en ligne fluides.
 - Il déclenche lui-même les **tours automatiques** quand le chronomètre est écoulé (17 s / 19 s), à la seconde près.
 - Toutes les 1 s, il jette un coup d'œil à la base pour relayer ce qui s'est passé ailleurs (abandon, régie, ancienne version du jeu…).
 
+- Il tient une **ligne directe** avec chaque téléphone ouvert : une fois par seconde, il lit le journal des signaux de la base (`_serveur_evenements`, voir `sql/04_serveur_signaux.sql`) et prévient chaque joueur de ce qu'il doit relire. L'appli n'a alors plus besoin du temps réel de Supabase, limité en formule gratuite (200 connexions simultanées).
+
 ## Ce qu'il ne fait pas (volontairement)
 
 - Il **ne recopie aucune règle** du Ludo : les règles, le hasard du dé, les mises, les gains et les tournois restent dans Supabase.
@@ -28,8 +30,12 @@ Téléphone → serveur :
 | `{t:'emoji', emoji, cible, n}` | Envoyer un sticker (payé par la base, montré à toute la table) |
 | `{t:'actualiser'}` | « J'ai changé la partie par Supabase » (rejoindre, revanche…) : le serveur relit et prévient la table |
 | `{t:'ping', c}` | Mesurer la latence |
+| `{t:'session', jeton}` | **Ligne directe** (0.4.0) : identifie le joueur pour toute la durée de l'appli, hors partie |
+| `{t:'en_ligne', ids, n}` | Parmi ces joueurs, lesquels ont l'appli ouverte ? |
 
-Serveur → téléphone : `bienvenue`, `refus`, `etat` (même forme que la réponse de `move_pawn` : `game` + `seats`), `reponse` (résultat de SON action), `emoji` (sticker envoyé à la table), `presence` (qui est connecté à la table), `pong`. L'état d'une partie terminée contient aussi `revanche` (revanche en cours et joueurs déjà assis).
+Serveur → téléphone (ligne directe) : `session_ok`, `signaux` (liste de `[sujet, clé]` : `solde`, `notifications`, `amis`, `paiements`, `support`, `salon`, `tournoi`, `partie` — le téléphone relit alors la donnée par Supabase ; aucun contenu ne transite), `en_ligne`.
+
+Serveur → téléphone (partie) : `bienvenue`, `refus`, `etat` (même forme que la réponse de `move_pawn` : `game` + `seats`), `reponse` (résultat de SON action), `emoji` (sticker envoyé à la table), `presence` (qui est connecté à la table), `pong`. L'état d'une partie terminée contient aussi `revanche` (revanche en cours et joueurs déjà assis).
 
 ## Réglages (variables d'environnement)
 

@@ -1,8 +1,10 @@
 // Accès à la base Supabase.
 //
-// Le serveur n'utilise que deux fonctions internes (voir sql/01_serveur_jeu.sql) :
-//   _serveur_etat   : lire l'état d'une ou plusieurs parties
-//   _serveur_action : jouer une action au nom d'un joueur + état à jour
+// Le serveur n'utilise que des fonctions internes (voir sql/) :
+//   _serveur_etat       : lire l'état d'une ou plusieurs parties
+//   _serveur_action     : jouer une action au nom d'un joueur + état à jour
+//   _serveur_emoji      : envoyer un sticker au nom d'un joueur
+//   _serveur_evenements : signaux hors partie (solde, notifications…)
 // Chaque appel = un seul aller-retour avec la base.
 
 import pg from 'pg';
@@ -37,6 +39,11 @@ export function creerBase(adresse, { ssl, max = 8 } = {}) {
         [joueur, partie, emoji, cible],
       );
       return r.rows[0].r;
+    },
+    // Signaux hors partie (sql/04_serveur_signaux.sql) : [id, joueur|null, sujet, cle].
+    async evenements(apres) {
+      const r = await pool.query('select public._serveur_evenements($1::bigint) as e', [apres]);
+      return r.rows[0].e ?? { dernier: apres ?? 0, evts: [] };
     },
     async fermer() {
       await pool.end();

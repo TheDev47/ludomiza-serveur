@@ -12,12 +12,20 @@
 //     (abandon depuis l'ancienne version, régie, nettoyage automatique…).
 //
 // Aucune règle du Ludo n'est recopiée ici, et aucun solde n'est touché.
+//
+// Depuis 0.4.0, chaque téléphone peut aussi ouvrir une « ligne directe »
+// (message « session ») pour toute la durée de l'appli : le serveur lit une
+// fois par seconde le journal des signaux de la base (_serveur_evenements) et
+// prévient chaque joueur de ce qu'il doit relire (solde, notifications, amis,
+// paiements, support, salon, tournoi, partie). Aucune donnée ne transite : un
+// signal dit seulement « relis ceci ». L'appli n'a alors plus besoin du temps
+// réel de Supabase, limité en formule gratuite.
 
 import http from 'node:http';
 import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 // Délais appliqués par la base (force_turn / force_move). Le serveur déclenche
 // l'action automatique juste après ; la base revérifie de toute façon.
@@ -52,10 +60,79 @@ export function creerServeur({
   margeMs = 250,
   toutesLesParties = false, // chronomètres aussi pour les parties sans téléphone connecté ici
   maxMessagesParSeconde = 30,
+  signauxMs = 1000,
   journal = console,
 } = {}) {
   const parties = new Map();
-  const stats = { demarre: new Date().toISOString(), actions: 0, forces: 0, stickers: 0, erreursBase: 0, msBaseTotal: 0 };
+  const stats = { demarre: new Date().toISOString(), actions: 0, forces: 0, stickers: 0, erreursBase: 0, msBaseTotal: 0, signaux: 0 };
+
+  // ------------------------------------------------- sessions (ligne directe) ----
+  const sessions = new Map();   // joueur -> Set(ws)
+  function ouvrirSession(ws, uid) {
+    if (ws.session && ws.session !== uid) fermerSession(ws);
+    ws.session = uid;
+    let s = sessions.get(uid);
+    if (!s) { s = new Set(); sessions.set(uid, s); }
+    s.add(ws);
+  }
+  function fermerSession(ws) {
+    const s = ws.session && sessions.get(ws.session);
+    if (s) { s.delete(ws); if (!s.size) sessions.delete(ws.session); }
+    ws.session = null;
+  }
+
+  // Journal des signaux : curseur + numéros déjà vus (la base relit une courte
+  // fenêtre, car deux transactions peuvent valider dans le désordre).
+  let curseur = null;
+  const vus = new Map();        // id -> instant où il a été vu
+  let signauxEnCours = false;
+  let signauxEnPauseJusqua = 0;   // après une erreur (ex. SQL pas encore installé) : 30 s de pause
+  async function lireSignaux() {
+    if (signauxEnCours || Date.now() < signauxEnPauseJusqua) return;
+    signauxEnCours = true;
+    try {
+      if (curseur == null) {
+        const r = await base.evenements(null);
+        curseur = Number(r.dernier) || 0;
+        return;
+      }
+      if (sessions.size === 0) {
+        // Personne à prévenir : on avance le curseur sans rien envoyer.
+        const r = await base.evenements(null);
+        curseur = Math.max(curseur, Number(r.dernier) || 0);
+        return;
+      }
+      const r = await base.evenements(curseur);
+      const maintenant = Date.now();
+      const parWs = new Map();  // ws -> Map("sujet|cle" -> [sujet, cle])
+      const ajouter = (ws, sujet, cle) => {
+        let m = parWs.get(ws);
+        if (!m) { m = new Map(); parWs.set(ws, m); }
+        m.set(`${sujet}|${cle ?? ''}`, cle == null ? [sujet] : [sujet, cle]);
+      };
+      for (const [id, uid, sujet, cle] of r.evts || []) {
+        if (vus.has(id)) continue;
+        vus.set(id, maintenant);
+        if (uid == null) {
+          for (const set of sessions.values()) for (const ws of set) ajouter(ws, sujet, cle);
+        } else {
+          for (const ws of sessions.get(uid) || []) ajouter(ws, sujet, cle);
+        }
+      }
+      for (const [ws, m] of parWs) {
+        stats.signaux += m.size;
+        envoyer(ws, { t: 'signaux', liste: [...m.values()] });
+      }
+      curseur = Math.max(curseur, Number(r.dernier) || curseur);
+      for (const [id, t] of vus) if (maintenant - t > 60_000) vus.delete(id);
+    } catch (e) {
+      stats.erreursBase++;
+      journal.error('[signaux]', e.message);
+      signauxEnPauseJusqua = Date.now() + 30_000;
+    } finally {
+      signauxEnCours = false;
+    }
+  }
 
   // ------------------------------------------------------------- parties ----
   function obtenir(id) {
@@ -312,7 +389,7 @@ export function creerServeur({
       res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
       res.end(JSON.stringify({
         ok: true, version: VERSION, demarre: stats.demarre,
-        connexions: wss.clients.size, parties: parties.size,
+        connexions: wss.clients.size, parties: parties.size, sessions: sessions.size, signaux: stats.signaux,
         actions: stats.actions, forces: stats.forces, stickers: stats.stickers, erreursBase: stats.erreursBase,
         msBaseMoyen: nb ? Math.round(stats.msBaseTotal / nb) : null,
       }));
@@ -336,6 +413,7 @@ export function creerServeur({
     ws.on('pong', () => { ws.vivant = true; });
     ws.on('error', () => {});
     ws.on('close', () => {
+      fermerSession(ws);
       if (!ws.partie) return;
       ws.partie.clients.delete(ws);
       diffuserPresence(ws.partie);
@@ -364,6 +442,22 @@ export function creerServeur({
           case 'bonjour':
             await accueillir(ws, m);
             break;
+          case 'session': {
+            // Ligne directe : identifie le joueur pour toute la durée de l'appli.
+            const uid = await verifierJeton(m.jeton);
+            if (!uid) { envoyer(ws, { t: 'refus', raison: 'jeton' }); ws.close(4001, 'jeton'); break; }
+            if (ws.readyState !== 1) break;
+            ouvrirSession(ws, uid);
+            envoyer(ws, { t: 'session_ok', uid, version: VERSION, s: Date.now() });
+            break;
+          }
+          case 'en_ligne': {
+            // Qui, parmi ces joueurs, a l'appli ouverte en ce moment ?
+            if (!ws.session) { envoyer(ws, { t: 'en_ligne', n: m.n, ids: [] }); break; }
+            const ids = Array.isArray(m.ids) ? m.ids.slice(0, 300).filter((x) => typeof x === 'string') : [];
+            envoyer(ws, { t: 'en_ligne', n: m.n, ids: ids.filter((x) => sessions.has(x)) });
+            break;
+          }
           case 'actualiser':
             if (ws.partie) await actualiser(ws);
             break;
@@ -405,18 +499,23 @@ export function creerServeur({
     }
   }, 15_000);
   let minuterieSondage = null;
+  let minuterieSignaux = null;
 
   return {
     parties,
+    sessions,
     stats,
     async demarrer() {
       await new Promise((ok) => serveurHttp.listen(port, hote, ok));
       minuterieSondage = setInterval(sonder, sondageMs);
+      await lireSignaux();   // point de départ du journal
+      minuterieSignaux = setInterval(lireSignaux, signauxMs);
       return serveurHttp.address().port;
     },
     async arreter() {
       clearInterval(battement);
       clearInterval(minuterieSondage);
+      clearInterval(minuterieSignaux);
       for (const p of parties.values()) clearTimeout(p.minuterie);
       for (const ws of wss.clients) ws.terminate();
       await new Promise((ok) => wss.close(() => ok()));
@@ -424,5 +523,6 @@ export function creerServeur({
       await Promise.all([...parties.values()].map((p) => p.file));
     },
     sonder,
+    lireSignaux,
   };
 }
