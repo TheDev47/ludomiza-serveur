@@ -22,10 +22,24 @@
 // réel de Supabase, limité en formule gratuite.
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
+import { difference } from './delta.js';
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
+
+// Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
+//   - chaque état porte un numéro de version « v » et l'« époque » du serveur
+//     (« ep », tirée au démarrage : les numéros repartent de zéro après un
+//     redémarrage) ;
+//   - après un coup, le serveur n'envoie que la DIFFÉRENCE (message « maj ») ;
+//   - à la reconnexion, le téléphone donne sa dernière version : il ne reçoit
+//     que ce qui a changé depuis, et l'état complet seulement si c'est trop vieux ;
+//   - tous les messages sont compressés (permessage-deflate).
+// Les anciennes versions du jeu continuent de recevoir l'état complet (« etat »).
+export const PROTOCOLE = 2;
+const HISTORIQUE = 40;   // états gardés par partie, pour la reprise après coupure
 
 // Délais appliqués par la base (force_turn / force_move). Le serveur déclenche
 // l'action automatique juste après ; la base revérifie de toute façon.
@@ -64,7 +78,8 @@ export function creerServeur({
   journal = console,
 } = {}) {
   const parties = new Map();
-  const stats = { demarre: new Date().toISOString(), actions: 0, forces: 0, stickers: 0, erreursBase: 0, msBaseTotal: 0, signaux: 0 };
+  const EPOQUE = crypto.randomBytes(4).toString('hex');
+  const stats = { demarre: new Date().toISOString(), actions: 0, forces: 0, stickers: 0, erreursBase: 0, msBaseTotal: 0, signaux: 0, octetsEtat: 0, octetsMaj: 0, reprises: 0, reprisesCompletes: 0 };
 
   // ------------------------------------------------- sessions (ligne directe) ----
   const sessions = new Map();   // joueur -> Set(ws)
@@ -139,7 +154,8 @@ export function creerServeur({
     let p = parties.get(id);
     if (!p) {
       p = { id, etat: null, sig: '', version: 0, clients: new Set(), file: Promise.resolve(),
-            occupe: 0, minuterie: null, decalage: 0, essaisForce: 0 };
+            occupe: 0, minuterie: null, decalage: 0, essaisForce: 0,
+            historique: [], delta: null };   // historique : [{ v, etat }] ; delta : dernière différence
       parties.set(id, p);
     }
     return p;
@@ -165,7 +181,47 @@ export function creerServeur({
   }
 
   function messageEtat(p, cause, extra = {}) {
-    return { t: 'etat', partie: p.id, game: p.etat.game, seats: p.etat.seats, revanche: p.etat.revanche ?? null, cause, ...extra, s: Date.now() };
+    return { t: 'etat', partie: p.id, game: p.etat.game, seats: p.etat.seats, revanche: p.etat.revanche ?? null,
+             v: p.version, ep: EPOQUE, cause, ...extra, s: Date.now() };
+  }
+
+  // Protocole 2 : seulement ce qui a changé depuis la version « de ».
+  function messageMaj(p, de, d, cause, extra = {}) {
+    return { t: 'maj', partie: p.id, ep: EPOQUE, de, v: p.version, d, cause, ...extra, s: Date.now() };
+  }
+
+  // Nouvel état à toute la table : la différence aux téléphones récents,
+  // l'état complet aux anciennes versions du jeu.
+  function diffuserEtat(p, cause, extra) {
+    let complet = null;
+    let maj = null;
+    for (const ws of p.clients) {
+      if (ws.readyState !== 1) continue;
+      if (ws.proto >= 2 && p.delta) {
+        maj ??= JSON.stringify(messageMaj(p, p.delta.de, p.delta.d, cause, extra));
+        ws.send(maj);
+        stats.octetsMaj += maj.length;
+      } else {
+        complet ??= JSON.stringify(messageEtat(p, cause, extra));
+        ws.send(complet);
+        stats.octetsEtat += complet.length;
+      }
+    }
+  }
+
+  // Un téléphone (re)vient : s'il connaît une version récente de cette partie,
+  // il ne reçoit que la différence ; sinon l'état complet.
+  function envoyerEtatA(ws, p, cause, depuis) {
+    if (ws.proto >= 2 && depuis && depuis.ep === EPOQUE && Number.isInteger(depuis.v)) {
+      const connu = depuis.v === p.version ? p.etat : p.historique.find((h) => h.v === depuis.v)?.etat;
+      if (connu) {
+        stats.reprises++;
+        envoyer(ws, messageMaj(p, depuis.v, depuis.v === p.version ? {} : difference(connu, p.etat), cause));
+        return;
+      }
+      stats.reprisesCompletes++;
+    }
+    envoyer(ws, messageEtat(p, cause));
   }
 
   // Présence : qui, à cette table, a une connexion ouverte avec le serveur.
@@ -186,11 +242,18 @@ export function creerServeur({
     const sig = JSON.stringify([etat.game, etat.seats, etat.revanche ?? null]);
     const change = sig !== p.sig;
     if (change) {
+      const ancien = p.etat;
+      const etatCourt = { game: etat.game, seats: etat.seats, revanche: etat.revanche ?? null };
       p.sig = sig;
       p.etat = etat;
       p.version++;
+      p.delta = ancien ? { de: p.version - 1, d: difference(ancien, etatCourt) } : null;
+      p.historique.push({ v: p.version, etat: etatCourt });
+      if (p.historique.length > HISTORIQUE) p.historique.shift();
+    } else if (toujours) {
+      p.delta = { de: p.version, d: {} };   // rien n'a changé : différence vide
     }
-    if (change || toujours) diffuser(p, messageEtat(p, cause, extra));
+    if (change || toujours) diffuserEtat(p, cause, extra);
     if (minuterie) planifier(p);
   }
 
@@ -322,11 +385,15 @@ export function creerServeur({
     const p = obtenir(m.partie);
     ws.uid = uid;
     ws.partie = p;
-    p.clients.add(ws);
-    envoyer(ws, { t: 'bienvenue', uid, partie: p.id, version: VERSION, s: Date.now() });
+    ws.proto = Number(m.proto) || 1;
+    envoyer(ws, { t: 'bienvenue', uid, partie: p.id, version: VERSION, proto: Math.min(ws.proto, PROTOCOLE), ep: EPOQUE, s: Date.now() });
+    // L'état lu ici est d'abord donné aux autres téléphones (s'il a changé) ;
+    // celui qui arrive reçoit ensuite le sien, une seule fois.
     if (!p.occupe) recevoirEtat(p, e, 'externe');
-    else planifier(p);
-    envoyer(ws, messageEtat(p.etat ? p : { ...p, etat: e }, 'initial'));
+    p.clients.add(ws);
+    planifier(p);
+    if (p.etat) envoyerEtatA(ws, p, 'initial', { ep: m.ep, v: Number(m.v) });
+    else envoyer(ws, messageEtat({ ...p, etat: e }, 'initial'));
     diffuserPresence(p);
   }
 
@@ -391,6 +458,7 @@ export function creerServeur({
         ok: true, version: VERSION, demarre: stats.demarre,
         connexions: wss.clients.size, parties: parties.size, sessions: sessions.size, signaux: stats.signaux,
         actions: stats.actions, forces: stats.forces, stickers: stats.stickers, erreursBase: stats.erreursBase,
+        octetsEtat: stats.octetsEtat, octetsMaj: stats.octetsMaj, reprises: stats.reprises, reprisesCompletes: stats.reprisesCompletes,
         msBaseMoyen: nb ? Math.round(stats.msBaseTotal / nb) : null,
       }));
       return;
@@ -399,7 +467,17 @@ export function creerServeur({
     res.end('LudoMiza — serveur de jeu');
   });
 
-  const wss = new WebSocketServer({ server: serveurHttp, maxPayload: 4096 });
+  // Compression des messages : négociée automatiquement avec le navigateur.
+  // Fenêtre et mémoire réduites pour tenir des milliers de connexions.
+  const wss = new WebSocketServer({
+    server: serveurHttp,
+    maxPayload: 4096,
+    perMessageDeflate: {
+      threshold: 96,
+      serverMaxWindowBits: 13,
+      zlibDeflateOptions: { level: 6, memLevel: 7 },
+    },
+  });
 
   wss.on('connection', (ws, req) => {
     const origine = req.headers.origin;
@@ -460,6 +538,10 @@ export function creerServeur({
           }
           case 'actualiser':
             if (ws.partie) await actualiser(ws);
+            break;
+          case 'reprendre':
+            // Le téléphone a perdu le fil (différence qui ne s'applique pas) : état complet.
+            if (ws.partie?.etat) envoyer(ws, messageEtat(ws.partie, 'reprise'));
             break;
           case 'emoji':
             if (!ws.partie) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'non_identifie' }); break; }

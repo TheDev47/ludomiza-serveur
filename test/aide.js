@@ -8,6 +8,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import WebSocket from 'ws';
+import { appliquer } from '../src/delta.js';
 
 const RACINE = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const ADMIN_URL = process.env.PG_TEST_URL || 'postgres://postgres@127.0.0.1:54329/postgres';
@@ -86,9 +87,16 @@ export async function verifierJetonDeTest(jeton) {
 // Un « téléphone » automatique : il lance quand c'est son tour et joue
 // un pion permis au hasard. « dort » = ne joue jamais (pour les chronomètres).
 export class Robot {
-  constructor(uid, { dort = false } = {}) {
+  constructor(uid, { dort = false, proto = 1, depuis = null, compression = true } = {}) {
+    this.compression = compression;
     this.uid = uid;
     this.dort = dort;
+    this.proto = proto;          // 2 : reçoit les différences (« maj ») et les applique
+    this.depuis = depuis;        // { ep, v } : reprise après coupure
+    this.octets = 0;
+    this.maj = 0;
+    this.complets = 0;
+    this.reprisesDemandees = 0;
     this.etat = null;
     this.etats = [];
     this.reponses = [];
@@ -102,15 +110,31 @@ export class Robot {
   connecter(url, partie) {
     this.partie = partie;
     return new Promise((ok, ko) => {
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(url, { perMessageDeflate: this.compression });
       this.ws = ws;
-      ws.on('open', () => ws.send(JSON.stringify({ t: 'bonjour', jeton: jetonDe(this.uid), partie })));
+      ws.on('open', () => ws.send(JSON.stringify({
+        t: 'bonjour', jeton: jetonDe(this.uid), partie,
+        ...(this.proto >= 2 ? { proto: 2, ...(this.depuis || {}) } : {}),
+      })));
       ws.on('error', ko);
       ws.on('message', (d) => {
+        this.octets += d.length;
         const m = JSON.parse(d.toString());
-        if (m.t === 'bienvenue') ok(this);
+        if (m.t === 'bienvenue') { this.bienvenue = m; ok(this); }
         if (m.t === 'refus') { this.refus = m.raison; ok(this); }
-        if (m.t === 'etat') this.recevoirEtat(m);
+        if (m.t === 'etat') { this.complets++; this.local = { ep: m.ep, v: m.v, game: m.game, seats: m.seats, revanche: m.revanche }; this.recevoirEtat(m); }
+        if (m.t === 'maj') {
+          this.maj++;
+          const l = this.local;
+          if (!l || l.ep !== m.ep || l.v !== m.de) {
+            this.reprisesDemandees++;
+            this.envoyer({ t: 'reprendre' });
+            return;
+          }
+          const e = appliquer(l, m.d);
+          this.local = { ep: m.ep, v: m.v, ...e };
+          this.recevoirEtat({ ...m, t: 'etat', game: e.game, seats: e.seats, revanche: e.revanche });
+        }
         if (m.t === 'reponse') {
           this.reponses.push(m);
           this.attente = false;
@@ -163,6 +187,9 @@ export class Robot {
     Robot.envois.set(this.uid, Date.now());
     this.envoyer({ t: 'jouer', pion: permis[Math.floor(Math.random() * permis.length)], n: ++this.n });
   }
+
+  /** Octets réellement reçus sur le réseau (après compression). */
+  octetsReseau() { return this.ws?._socket?.bytesRead ?? 0; }
 
   fermer() {
     clearTimeout(this.prevu);
