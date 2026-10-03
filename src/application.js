@@ -27,7 +27,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.5.1';
+export const VERSION = '0.6.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -43,10 +43,13 @@ const HISTORIQUE = 40;   // états gardés par partie, pour la reprise après co
 
 // Délais appliqués par la base (force_turn / force_move). Le serveur déclenche
 // l'action automatique juste après ; la base revérifie de toute façon.
+// Depuis le 03/10/2026, le délai du tour est dans la partie (games.delai_tour_s :
+// 16 s, ou 6 s pour un joueur absent 2 tours d'affilée) ; les valeurs ci-dessous
+// ne servent que si la base ne le donne pas.
 export const DELAIS_MS = {
-  lancer: 17_000, // force_turn : 17 s après le début du tour
-  pion: 19_000, // force_move : 19 s après le début du tour…
-  apresLancer: 9_000, // …et 9 s après un lancer manuel
+  lancer: 17_000, // force_turn : délai du tour après son début
+  pion: 19_000, // force_move : délai du tour + 2 s après son début…
+  apresLancer: 7_000, // …et 7 s après un lancer manuel
   apresLancerAuto: 2_000, // …ou 2 s après un lancer automatique
 };
 
@@ -56,10 +59,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function echeance(game) {
   if (!game || game.status !== 'playing') return null;
   const debutTour = game.turn_started_at ? Date.parse(game.turn_started_at) : null;
-  if (!game.must_move) return debutTour == null ? 0 : debutTour + DELAIS_MS.lancer;
+  const delai = Number.isFinite(game.delai_tour_s) ? game.delai_tour_s * 1000 : null;
+  const lancer = delai ?? DELAIS_MS.lancer;
+  const pion = delai != null ? delai + 2000 : DELAIS_MS.pion;
+  if (!game.must_move) return debutTour == null ? 0 : debutTour + lancer;
   const lance = game.rolled_at ? Date.parse(game.rolled_at) : debutTour;
   return Math.max(
-    debutTour == null ? 0 : debutTour + DELAIS_MS.pion,
+    debutTour == null ? 0 : debutTour + pion,
     (lance ?? 0) + (game.auto_rolled ? DELAIS_MS.apresLancerAuto : DELAIS_MS.apresLancer),
   );
 }

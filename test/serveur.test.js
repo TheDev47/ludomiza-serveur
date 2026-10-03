@@ -154,7 +154,11 @@ test('calcul de l’échéance du chronomètre', () => {
   const t = Date.parse('2026-09-30T10:00:00Z');
   const base = { status: 'playing', turn_started_at: new Date(t).toISOString() };
   assert.equal(echeance({ ...base, must_move: false }), t + 17_000);
-  assert.equal(echeance({ ...base, must_move: true, rolled_at: new Date(t + 15_000).toISOString(), auto_rolled: false }), t + 24_000);
+  assert.equal(echeance({ ...base, must_move: true, rolled_at: new Date(t + 15_000).toISOString(), auto_rolled: false }), t + 22_000);
+  // délai donné par la base (0.6.0) : 16 s, ou 6 s pour un joueur absent
+  assert.equal(echeance({ ...base, delai_tour_s: 16, must_move: false }), t + 16_000);
+  assert.equal(echeance({ ...base, delai_tour_s: 6, must_move: false }), t + 6_000);
+  assert.equal(echeance({ ...base, delai_tour_s: 6, must_move: true, rolled_at: new Date(t + 6_000).toISOString(), auto_rolled: true }), t + 8_000);
   assert.equal(echeance({ ...base, must_move: true, rolled_at: new Date(t + 17_000).toISOString(), auto_rolled: true }), t + 19_000);
   assert.equal(echeance({ ...base, status: 'finished' }), null);
 });
