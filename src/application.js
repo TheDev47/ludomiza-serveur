@@ -27,7 +27,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.5.1';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -77,6 +77,15 @@ export function creerServeur({
   signauxMs = 1000,
   journal = console,
 } = {}) {
+  // Temps d'aller-retour serveur ↔ téléphone (ping du battement), 500 dernières mesures.
+  const rtts = [];
+  function noterRtt(ms) { rtts.push(ms); if (rtts.length > 500) rtts.shift(); }
+  function centile(liste, q) {
+    if (!liste.length) return null;
+    const t = [...liste].sort((a, b) => a - b);
+    return t[Math.min(t.length - 1, Math.floor(q * t.length))];
+  }
+
   const parties = new Map();
   const EPOQUE = crypto.randomBytes(4).toString('hex');
   const stats = { demarre: new Date().toISOString(), actions: 0, forces: 0, stickers: 0, erreursBase: 0, msBaseTotal: 0, signaux: 0, octetsEtat: 0, octetsMaj: 0, reprises: 0, reprisesCompletes: 0 };
@@ -458,6 +467,7 @@ export function creerServeur({
         ok: true, version: VERSION, demarre: stats.demarre,
         connexions: wss.clients.size, parties: parties.size, sessions: sessions.size, signaux: stats.signaux,
         actions: stats.actions, forces: stats.forces, stickers: stats.stickers, erreursBase: stats.erreursBase,
+        latenceJoueursMs: { mediane: centile(rtts, 0.5), p90: centile(rtts, 0.9), mesures: rtts.length },
         octetsEtat: stats.octetsEtat, octetsMaj: stats.octetsMaj, reprises: stats.reprises, reprisesCompletes: stats.reprisesCompletes,
         msBaseMoyen: nb ? Math.round(stats.msBaseTotal / nb) : null,
       }));
@@ -488,7 +498,10 @@ export function creerServeur({
     ws.vivant = true;
     ws.fenetre = Date.now();
     ws.compte = 0;
-    ws.on('pong', () => { ws.vivant = true; });
+    ws.on('pong', () => {
+      ws.vivant = true;
+      if (ws.pingA) { noterRtt(Date.now() - ws.pingA); ws.pingA = 0; }
+    });
     ws.on('error', () => {});
     ws.on('close', () => {
       fermerSession(ws);
@@ -577,6 +590,7 @@ export function creerServeur({
     for (const ws of wss.clients) {
       if (!ws.vivant) { ws.terminate(); continue; }
       ws.vivant = false;
+      ws.pingA = Date.now();
       ws.ping();
     }
   }, 15_000);
