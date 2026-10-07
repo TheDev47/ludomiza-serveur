@@ -33,7 +33,10 @@ const serveur = creerServeur({
   verifierJeton: verificateurSupabase(env.SUPABASE_URL, env.SUPABASE_ANON_KEY),
   port: Number(env.PORT || 8080),
   hote: env.HOTE || '127.0.0.1',
-  origines: (env.ORIGINES || '').split(',').map((s) => s.trim()).filter(Boolean),
+  // La régie demande la liste des spectateurs (comptes admin seulement) : son
+  // adresse est toujours acceptée, en plus de celles du réglage ORIGINES.
+  origines: ((o) => (o.length ? [...new Set([...o, 'https://regie.ludomiza.com'])] : o))(
+    (env.ORIGINES || '').split(',').map((s) => s.trim()).filter(Boolean)),
   toutesLesParties: env.TOUTES_LES_PARTIES === 'oui',
 });
 
