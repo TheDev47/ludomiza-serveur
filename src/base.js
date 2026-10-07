@@ -5,6 +5,7 @@
 //   _serveur_action     : jouer une action au nom d'un joueur + état à jour
 //   _serveur_emoji      : envoyer un sticker au nom d'un joueur
 //   _serveur_evenements : signaux hors partie (solde, notifications…)
+//   _serveur_pseudo     : pseudo d'un spectateur (signature des réactions)
 // Chaque appel = un seul aller-retour avec la base.
 
 import pg from 'pg';
@@ -44,6 +45,10 @@ export function creerBase(adresse, { ssl, max = 8 } = {}) {
     async evenements(apres) {
       const r = await pool.query('select public._serveur_evenements($1::bigint) as e', [apres]);
       return r.rows[0].e ?? { dernier: apres ?? 0, evts: [] };
+    },
+    async pseudo(joueur) {
+      const r = await pool.query('select public._serveur_pseudo($1::uuid) as p', [joueur]);
+      return r.rows[0]?.p ?? null;
     },
     async fermer() {
       await pool.end();

@@ -29,7 +29,7 @@ Téléphone → serveur :
 | `{t:'jouer', pion, n}` | Jouer le pion 1 à 4 |
 | `{t:'quitter', n}` | Abandonner |
 | `{t:'emoji', emoji, cible, n}` | Envoyer un sticker (payé par la base, montré à toute la table) |
-| `{t:'reaction', code}` | (0.7.0) **Spectateur** seulement : réaction toute prête (code court, ex. `feu`), relayée à toute la table sans rien écrire en base. Au plus une toutes les 2,5 s par spectateur et 12 par seconde par table |
+| `{t:'reaction', code, cible?}` | (0.7.0) **Spectateur** seulement : réaction toute prête (code court, ex. `feu`), éventuellement adressée à un joueur assis (`cible`, 0.8.0), relayée à toute la table sans rien écrire en base. Au plus une toutes les 2,5 s par spectateur et 12 par seconde par table |
 | `{t:'actualiser'}` | « J'ai changé la partie par Supabase » (rejoindre, revanche…) : le serveur relit et prévient la table |
 | `{t:'ping', c}` | Mesurer la latence |
 | `{t:'session', jeton}` | **Ligne directe** (0.4.0) : identifie le joueur pour toute la durée de l'appli, hors partie |
@@ -37,7 +37,7 @@ Téléphone → serveur :
 
 Serveur → téléphone (ligne directe) : `session_ok`, `signaux` (liste de `[sujet, clé]` : `solde`, `notifications`, `amis`, `paiements`, `support`, `salon`, `tournoi`, `partie` — le téléphone relit alors la donnée par Supabase ; aucun contenu ne transite), `en_ligne`.
 
-Serveur → téléphone (partie) : `bienvenue`, `refus`, `etat` (même forme que la réponse de `move_pawn` : `game` + `seats`), `reponse` (résultat de SON action), `emoji` (sticker envoyé à la table), `presence` (qui est connecté à la table ; `spectateurs` : nombre de personnes qui regardent), `reaction` (réaction d'un spectateur : `code`, `id`), `pong`. L'état d'une partie terminée contient aussi `revanche` (revanche en cours et joueurs déjà assis).
+Serveur → téléphone (partie) : `bienvenue`, `refus`, `etat` (même forme que la réponse de `move_pawn` : `game` + `seats`), `reponse` (résultat de SON action), `emoji` (sticker envoyé à la table), `presence` (qui est connecté à la table ; `spectateurs` : nombre de personnes qui regardent), `reaction` (réaction d'un spectateur : `code`, `id`, `de`, `pseudo` lu en base une fois par connexion via `_serveur_pseudo`, `cible`), `pong`. L'état d'une partie terminée contient aussi `revanche` (revanche en cours et joueurs déjà assis).
 
 **Protocole 2 (0.5.0)** : chaque état porte une version `v` et l'époque du serveur `ep` (tirée au démarrage). Aux téléphones qui l'annoncent, le serveur envoie `maj` au lieu de `etat` : `{t:'maj', ep, de, v, d}` où `d` ne contient que ce qui a changé depuis la version `de` (`g` champs de la partie, `s` champs des sièges par joueur, `S` tous les sièges si quelqu'un arrive ou part, `r` revanche). Voir `src/delta.js`. Une différence vide (`de === v`) accompagne une action sans changement. Les 40 derniers états de chaque partie sont gardés pour les reprises ; au-delà (ou après un redémarrage), l'état complet est renvoyé. Les messages sont compressés (permessage-deflate). Les anciennes versions du jeu reçoivent toujours `etat`. Sur une partie complète : environ 1 300 octets par mise à jour avant, 50 après.
 

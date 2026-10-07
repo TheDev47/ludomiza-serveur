@@ -262,14 +262,24 @@ test('spectateurs : comptés à part, réactions relayées sans la base, aucune 
 
   // Réaction : relayée à la table ; une 2e trop rapide est ignorée ; code invalide ignoré.
   const avant = await bd.su.query('select count(*)::int n from transactions');
-  s.envoyer({ t: 'reaction', code: 'feu' });
+  s.envoyer({ t: 'reaction', code: 'feu', cible: jb });
   await attendre(() => vus.some((m) => m.t === 'reaction' && m.code === 'feu'), 2000);
+  const r1 = vus.find((m) => m.t === 'reaction');
+  const { rows: [ps] } = await bd.su.query('select pseudo from profiles where id = $1', [js]);
+  assert.equal(r1.de, js);
+  assert.equal(r1.pseudo, ps.pseudo, 'signée du pseudo lu en base');
+  assert.equal(r1.cible, jb);
   s.envoyer({ t: 'reaction', code: 'bravo' });
+  // Cible étrangère à la table : ignorée (réaction pour tous).
+  await new Promise((r) => setTimeout(r, 2600));
+  s.envoyer({ t: 'reaction', code: 'dort', cible: '00000000-0000-0000-0000-000000000000' });
+  await attendre(() => vus.some((m) => m.t === 'reaction' && m.code === 'dort'), 2000);
+  assert.equal(vus.find((m) => m.code === 'dort').cible, null);
   s.envoyer({ t: 'reaction', code: '<script>' });
   // Un joueur assis ne peut pas en envoyer.
   a.envoyer({ t: 'reaction', code: 'rire' });
   await new Promise((r) => setTimeout(r, 400));
-  assert.deepEqual(vus.filter((m) => m.t === 'reaction').map((m) => m.code), ['feu']);
+  assert.deepEqual(vus.filter((m) => m.t === 'reaction').map((m) => m.code), ['feu', 'dort']);
   const apres = await bd.su.query('select count(*)::int n from transactions');
   assert.equal(apres.rows[0].n, avant.rows[0].n, 'rien écrit en base');
 

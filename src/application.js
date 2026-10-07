@@ -27,7 +27,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.7.0';
+export const VERSION = '0.8.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -266,10 +266,25 @@ export function creerServeur({
     const t = Date.now();
     if (ws.derniereReaction && t - ws.derniereReaction < REACTION_MIN_MS) return;
     if (t - (p.fenetreReactions || 0) >= 1000) { p.fenetreReactions = t; p.nbReactions = 0; }
+    // Cible facultative : un joueur assis à cette table.
+    const cible = typeof m.cible === 'string' && p.etat?.seats?.some((x) => x.player_id === m.cible) ? m.cible : null;
     if (++p.nbReactions > REACTIONS_PAR_PARTIE_S) return;
     ws.derniereReaction = t;
     stats.reactions = (stats.reactions || 0) + 1;
-    diffuser(p, { t: 'reaction', partie: p.id, code: m.code, id: `${t.toString(36)}${Math.random().toString(36).slice(2, 6)}` });
+    diffuser(p, { t: 'reaction', partie: p.id, code: m.code, de: ws.uid, pseudo: ws.pseudo || null, cible,
+                  id: `${t.toString(36)}${Math.random().toString(36).slice(2, 6)}` });
+  }
+
+  // Pseudo du spectateur, lu une seule fois (gardé en mémoire 30 min).
+  const pseudos = new Map();
+  async function pseudoDe(uid) {
+    const c = pseudos.get(uid);
+    if (c && c.fin > Date.now()) return c.p;
+    let p = null;
+    try { p = await base.pseudo(uid); } catch (e) { journal.error('[pseudo]', e?.message ?? e); }
+    if (pseudos.size > 5000) pseudos.clear();
+    if (p) pseudos.set(uid, { p, fin: Date.now() + 30 * 60_000 });
+    return p;
   }
 
   // Nouvel état venu de la base : on le garde, on le diffuse s'il a changé,
@@ -430,6 +445,8 @@ export function creerServeur({
     const p = obtenir(m.partie);
     ws.uid = uid;
     ws.spectateur = spectateur;
+    if (spectateur) ws.pseudo = await pseudoDe(uid);
+    if (ws.readyState !== 1) return;
     ws.partie = p;
     ws.proto = Number(m.proto) || 1;
     envoyer(ws, { t: 'bienvenue', uid, partie: p.id, spectateur, version: VERSION, proto: Math.min(ws.proto, PROTOCOLE), ep: EPOQUE, s: Date.now() });
