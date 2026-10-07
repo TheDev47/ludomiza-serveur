@@ -27,7 +27,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -273,6 +273,27 @@ export function creerServeur({
     stats.reactions = (stats.reactions || 0) + 1;
     diffuser(p, { t: 'reaction', partie: p.id, code: m.code, de: ws.uid, pseudo: ws.pseudo || null, cible,
                   id: `${t.toString(36)}${Math.random().toString(36).slice(2, 6)}` });
+  }
+
+  // Régie : liste des spectateurs de chaque partie (administrateurs seulement).
+  const admins = new Map();   // uid -> { ok, fin }
+  async function estAdmin(uid) {
+    const c = admins.get(uid);
+    if (c && c.fin > Date.now()) return c.ok;
+    let ok = false;
+    try { ok = await base.estAdmin(uid); } catch (e) { journal.error('[admin]', e?.message ?? e); return false; }
+    if (admins.size > 1000) admins.clear();
+    admins.set(uid, { ok, fin: Date.now() + 5 * 60_000 });
+    return ok;
+  }
+  function listeSpectateurs() {
+    const out = {};
+    for (const [id, p] of parties) {
+      const vus = new Map();
+      for (const w of p.clients) if (w.readyState === 1 && w.spectateur && w.uid) vus.set(w.uid, w.pseudo || null);
+      if (vus.size) out[id] = [...vus].map(([uid, pseudo]) => ({ uid, pseudo }));
+    }
+    return out;
   }
 
   // Pseudo du spectateur, lu une seule fois (gardé en mémoire 30 min).
@@ -613,6 +634,14 @@ export function creerServeur({
           case 'reaction':
             relayerReaction(ws, m);
             break;
+          case 'admin_spectateurs': {
+            // La régie (jeton d'un compte admin) : qui regarde quelle partie.
+            const uid = ws.adminUid || await verifierJeton(m.jeton);
+            if (!uid || !(await estAdmin(uid))) { envoyer(ws, { t: 'refus', raison: 'pas_admin' }); ws.close(4003, 'admin'); break; }
+            ws.adminUid = uid;
+            envoyer(ws, { t: 'spectateurs', n: m.n, parties: listeSpectateurs(), s: Date.now() });
+            break;
+          }
           case 'emoji':
             if (ws.spectateur) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'spectateur' }); break; }
             if (!ws.partie) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'non_identifie' }); break; }

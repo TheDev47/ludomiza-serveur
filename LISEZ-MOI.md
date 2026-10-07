@@ -31,6 +31,7 @@ Téléphone → serveur :
 | `{t:'emoji', emoji, cible, n}` | Envoyer un sticker (payé par la base, montré à toute la table) |
 | `{t:'reaction', code, cible?}` | (0.7.0) **Spectateur** seulement : réaction toute prête (code court, ex. `feu`), éventuellement adressée à un joueur assis (`cible`, 0.8.0), relayée à toute la table sans rien écrire en base. Au plus une toutes les 2,5 s par spectateur et 12 par seconde par table |
 | `{t:'actualiser'}` | « J'ai changé la partie par Supabase » (rejoindre, revanche…) : le serveur relit et prévient la table |
+| `{t:'admin_spectateurs', jeton, n}` | (0.9.0) **Régie** : jeton d'un compte admin (vérifié une fois par `_serveur_est_admin`, gardé 5 min) ; réponse `{t:'spectateurs', parties: {id: [{uid, pseudo}]}}`. Rien n'est écrit en base |
 | `{t:'ping', c}` | Mesurer la latence |
 | `{t:'session', jeton}` | **Ligne directe** (0.4.0) : identifie le joueur pour toute la durée de l'appli, hors partie |
 | `{t:'en_ligne', ids, n}` | Parmi ces joueurs, lesquels ont l'appli ouverte ? |

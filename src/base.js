@@ -6,6 +6,7 @@
 //   _serveur_emoji      : envoyer un sticker au nom d'un joueur
 //   _serveur_evenements : signaux hors partie (solde, notifications…)
 //   _serveur_pseudo     : pseudo d'un spectateur (signature des réactions)
+//   _serveur_est_admin  : la régie demande la liste des spectateurs
 // Chaque appel = un seul aller-retour avec la base.
 
 import pg from 'pg';
@@ -49,6 +50,10 @@ export function creerBase(adresse, { ssl, max = 8 } = {}) {
     async pseudo(joueur) {
       const r = await pool.query('select public._serveur_pseudo($1::uuid) as p', [joueur]);
       return r.rows[0]?.p ?? null;
+    },
+    async estAdmin(joueur) {
+      const r = await pool.query('select public._serveur_est_admin($1::uuid) as a', [joueur]);
+      return r.rows[0]?.a === true;
     },
     async fermer() {
       await pool.end();

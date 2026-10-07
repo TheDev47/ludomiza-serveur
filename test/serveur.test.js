@@ -286,6 +286,22 @@ test('spectateurs : comptés à part, réactions relayées sans la base, aucune 
   s.fermer();
   await attendre(() => vus.at(-1)?.t === 'presence' && vus.at(-1).spectateurs === 0, 2000);
 
+  // Régie : un admin voit qui regarde ; un joueur ordinaire est refusé.
+  const s3 = await new Robot(js, { dort: true, spectateur: true }).connecter(url, partie);
+  await attendre(() => vus.some((m) => m.t === 'presence' && m.spectateurs === 1), 2000);
+  const demander = (uid) => new Promise((ok) => {
+    const w = new WebSocket(url);
+    w.on('open', () => w.send(JSON.stringify({ t: 'admin_spectateurs', jeton: jetonDe(uid), n: 1 })));
+    w.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'spectateurs' || m.t === 'refus') { w.close(); ok(m); } });
+  });
+  const refus = await demander(ja);
+  assert.equal(refus.raison, 'pas_admin');
+  await bd.su.query('update profiles set is_admin = true where id = $1', [jb]);
+  const rep = await demander(jb);
+  const { rows: [ps2] } = await bd.su.query('select pseudo from profiles where id = $1', [js]);
+  assert.deepEqual(rep.parties[partie], [{ uid: js, pseudo: ps2.pseudo }]);
+  s3.fermer();
+
   // Partie privée (hors tournoi) : pas de spectateur.
   await bd.su.query('update games set prive = true where id = $1', [partie]);
   const s2 = await new Robot(js, { dort: true, spectateur: true }).connecter(url, partie);
