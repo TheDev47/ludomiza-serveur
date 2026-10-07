@@ -236,6 +236,53 @@ test('présence : chacun sait qui est connecté à la table', async () => {
   a.fermer();
 });
 
+test('spectateurs : comptés à part, réactions relayées sans la base, aucune action permise', async () => {
+  const joueurs = await creerJoueurs(bd.su, 3);
+  const [ja, jb, js] = joueurs;
+  const partie = await creerPartie(bd.su, [ja, jb]);
+  const vus = [];
+  const a = await new Robot(ja, { dort: true }).connecter(url, partie);
+  a.ws.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'presence' || m.t === 'reaction') vus.push(m); });
+  const b = await new Robot(jb, { dort: true }).connecter(url, partie);
+
+  // Un étranger sans le drapeau spectateur reste refusé.
+  const intrus = await new Robot(js, { dort: true }).connecter(url, partie);
+  assert.equal(intrus.refus, 'pas_a_la_table');
+
+  const s = await new Robot(js, { dort: true, spectateur: true }).connecter(url, partie);
+  assert.equal(s.bienvenue?.spectateur, true);
+  await attendre(() => s.etat?.game, 2000);
+  await attendre(() => vus.some((m) => m.t === 'presence' && m.spectateurs === 1 && m.connectes.length === 2), 2000);
+
+  // Aucune action de jeu.
+  s.envoyer({ t: 'lancer', n: 1 });
+  s.envoyer({ t: 'emoji', emoji: 'x', cible: ja, n: 2 });
+  await attendre(() => s.reponses.length === 2, 2000);
+  assert.ok(s.reponses.every((r) => !r.ok && r.erreur === 'spectateur'));
+
+  // Réaction : relayée à la table ; une 2e trop rapide est ignorée ; code invalide ignoré.
+  const avant = await bd.su.query('select count(*)::int n from transactions');
+  s.envoyer({ t: 'reaction', code: 'feu' });
+  await attendre(() => vus.some((m) => m.t === 'reaction' && m.code === 'feu'), 2000);
+  s.envoyer({ t: 'reaction', code: 'bravo' });
+  s.envoyer({ t: 'reaction', code: '<script>' });
+  // Un joueur assis ne peut pas en envoyer.
+  a.envoyer({ t: 'reaction', code: 'rire' });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.deepEqual(vus.filter((m) => m.t === 'reaction').map((m) => m.code), ['feu']);
+  const apres = await bd.su.query('select count(*)::int n from transactions');
+  assert.equal(apres.rows[0].n, avant.rows[0].n, 'rien écrit en base');
+
+  s.fermer();
+  await attendre(() => vus.at(-1)?.t === 'presence' && vus.at(-1).spectateurs === 0, 2000);
+
+  // Partie privée (hors tournoi) : pas de spectateur.
+  await bd.su.query('update games set prive = true where id = $1', [partie]);
+  const s2 = await new Robot(js, { dort: true, spectateur: true }).connecter(url, partie);
+  assert.equal(s2.refus, 'pas_spectateur');
+  a.fermer(); b.fermer();
+});
+
 test('salle d’attente et revanche : un changement fait par Supabase est annoncé tout de suite', async () => {
   const joueurs = await creerJoueurs(bd.su, 2);
   // salle d'attente : l'hôte attend, l'autre joueur rejoint

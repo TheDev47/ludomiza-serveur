@@ -87,7 +87,8 @@ export async function verifierJetonDeTest(jeton) {
 // Un « téléphone » automatique : il lance quand c'est son tour et joue
 // un pion permis au hasard. « dort » = ne joue jamais (pour les chronomètres).
 export class Robot {
-  constructor(uid, { dort = false, proto = 1, depuis = null, compression = true } = {}) {
+  constructor(uid, { dort = false, proto = 1, depuis = null, compression = true, spectateur = false } = {}) {
+    this.spectateur = spectateur;
     this.compression = compression;
     this.uid = uid;
     this.dort = dort;
@@ -113,7 +114,7 @@ export class Robot {
       const ws = new WebSocket(url, { perMessageDeflate: this.compression });
       this.ws = ws;
       ws.on('open', () => ws.send(JSON.stringify({
-        t: 'bonjour', jeton: jetonDe(this.uid), partie,
+        t: 'bonjour', jeton: jetonDe(this.uid), partie, ...(this.spectateur ? { spectateur: true } : {}),
         ...(this.proto >= 2 ? { proto: 2, ...(this.depuis || {}) } : {}),
       })));
       ws.on('error', ko);

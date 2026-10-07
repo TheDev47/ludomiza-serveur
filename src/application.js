@@ -27,7 +27,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -53,6 +53,10 @@ export const DELAIS_MS = {
   apresLancerAuto: 2_000, // …ou 2 s après un lancer automatique
 };
 
+// Réaction de spectateur : un code court (la liste des messages est dans l'appli).
+const CODE_REACTION = /^[a-z0-9_]{1,24}$/;
+const REACTION_MIN_MS = 2500;      // une réaction toutes les 2,5 s par spectateur
+const REACTIONS_PAR_PARTIE_S = 12; // au plus 12 par seconde pour toute la table
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Instant (horloge de la base, en ms) à partir duquel l'action automatique est permise.
@@ -243,10 +247,29 @@ export function creerServeur({
   // Envoyé à chaque arrivée ou départ ; le téléphone attend quelques secondes
   // avant d'afficher « hors ligne » (une reconnexion rapide ne se voit pas).
   function connectes(p) {
-    return [...new Set([...p.clients].filter((w) => w.readyState === 1 && w.uid).map((w) => w.uid))];
+    return [...new Set([...p.clients].filter((w) => w.readyState === 1 && w.uid && !w.spectateur).map((w) => w.uid))];
+  }
+  // Spectateurs : nombre de personnes (pas de connexions) qui regardent la table.
+  function nbSpectateurs(p) {
+    return new Set([...p.clients].filter((w) => w.readyState === 1 && w.uid && w.spectateur).map((w) => w.uid)).size;
   }
   function diffuserPresence(p) {
-    diffuser(p, { t: 'presence', partie: p.id, connectes: connectes(p) });
+    diffuser(p, { t: 'presence', partie: p.id, connectes: connectes(p), spectateurs: nbSpectateurs(p) });
+  }
+
+  // Réaction d'un spectateur (message tout prêt) : relayée à toute la table,
+  // rien n'est écrit dans la base.
+  function relayerReaction(ws, m) {
+    const p = ws.partie;
+    if (!p || !ws.spectateur) return;
+    if (typeof m.code !== 'string' || !CODE_REACTION.test(m.code)) return;
+    const t = Date.now();
+    if (ws.derniereReaction && t - ws.derniereReaction < REACTION_MIN_MS) return;
+    if (t - (p.fenetreReactions || 0) >= 1000) { p.fenetreReactions = t; p.nbReactions = 0; }
+    if (++p.nbReactions > REACTIONS_PAR_PARTIE_S) return;
+    ws.derniereReaction = t;
+    stats.reactions = (stats.reactions || 0) + 1;
+    diffuser(p, { t: 'reaction', partie: p.id, code: m.code, id: `${t.toString(36)}${Math.random().toString(36).slice(2, 6)}` });
   }
 
   // Nouvel état venu de la base : on le garde, on le diffuse s'il a changé,
@@ -385,7 +408,14 @@ export function creerServeur({
       return;
     }
     const assis = e.seats.some((s) => s.player_id === uid);
-    if (!assis && e.game.status === 'playing') {
+    // Spectateur : partie publique ou de tournoi, en cours ou terminée.
+    const spectateur = !assis && m.spectateur === true;
+    if (spectateur && (e.game.status === 'waiting' || (e.game.prive && !e.game.tournoi_id))) {
+      envoyer(ws, { t: 'refus', raison: 'pas_spectateur' });
+      ws.close(4003, 'table');
+      return;
+    }
+    if (!assis && !spectateur && e.game.status === 'playing') {
       envoyer(ws, { t: 'refus', raison: 'pas_a_la_table' });
       ws.close(4003, 'table');
       return;
@@ -399,9 +429,10 @@ export function creerServeur({
     }
     const p = obtenir(m.partie);
     ws.uid = uid;
+    ws.spectateur = spectateur;
     ws.partie = p;
     ws.proto = Number(m.proto) || 1;
-    envoyer(ws, { t: 'bienvenue', uid, partie: p.id, version: VERSION, proto: Math.min(ws.proto, PROTOCOLE), ep: EPOQUE, s: Date.now() });
+    envoyer(ws, { t: 'bienvenue', uid, partie: p.id, spectateur, version: VERSION, proto: Math.min(ws.proto, PROTOCOLE), ep: EPOQUE, s: Date.now() });
     // L'état lu ici est d'abord donné aux autres téléphones (s'il a changé) ;
     // celui qui arrive reçoit ensuite le sien, une seule fois.
     if (!p.occupe) recevoirEtat(p, e, 'externe');
@@ -556,13 +587,17 @@ export function creerServeur({
             break;
           }
           case 'actualiser':
-            if (ws.partie) await actualiser(ws);
+            if (ws.partie && !ws.spectateur) await actualiser(ws);
             break;
           case 'reprendre':
             // Le téléphone a perdu le fil (différence qui ne s'applique pas) : état complet.
             if (ws.partie?.etat) envoyer(ws, messageEtat(ws.partie, 'reprise'));
             break;
+          case 'reaction':
+            relayerReaction(ws, m);
+            break;
           case 'emoji':
+            if (ws.spectateur) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'spectateur' }); break; }
             if (!ws.partie) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'non_identifie' }); break; }
             await envoyerSticker(ws, m);
             break;
@@ -570,6 +605,7 @@ export function creerServeur({
           case 'quitter':
           case 'jouer': {
             if (!ws.partie) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'non_identifie' }); break; }
+            if (ws.spectateur) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'spectateur' }); break; }
             let pion = null;
             if (m.t === 'jouer') {
               pion = Number(m.pion);
