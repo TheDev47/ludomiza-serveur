@@ -27,7 +27,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.10.0';
+export const VERSION = '0.10.1';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -91,6 +91,9 @@ export function creerServeur({
   // Temps d'aller-retour serveur ↔ téléphone (ping du battement), 500 dernières mesures.
   const rtts = [];
   function noterRtt(ms) { rtts.push(ms); if (rtts.length > 500) rtts.shift(); }
+  // Aller-retour serveur ↔ base (lecture des signaux, chaque seconde), 300 dernières mesures.
+  const rttsBase = [];
+  function noterRttBase(ms) { rttsBase.push(ms); if (rttsBase.length > 300) rttsBase.shift(); }
   function centile(liste, q) {
     if (!liste.length) return null;
     const t = [...liste].sort((a, b) => a - b);
@@ -159,7 +162,9 @@ export function creerServeur({
         curseur = Math.max(curseur, Number(r.dernier) || 0);
         return;
       }
+      const t0 = performance.now();
       const r = await base.evenements(curseur);
+      noterRttBase(Math.round(performance.now() - t0));
       const maintenant = Date.now();
       const parWs = new Map();  // ws -> Map("sujet|cle" -> [sujet, cle])
       const ajouter = (ws, sujet, cle) => {
@@ -566,6 +571,7 @@ export function creerServeur({
         connexions: wss.clients.size, parties: parties.size, sessions: sessions.size, signaux: stats.signaux,
         actions: stats.actions, forces: stats.forces, stickers: stats.stickers, erreursBase: stats.erreursBase,
         latenceJoueursMs: { mediane: centile(rtts, 0.5), p90: centile(rtts, 0.9), mesures: rtts.length },
+        latenceBaseMs: { mediane: centile(rttsBase, 0.5), p90: centile(rttsBase, 0.9), mesures: rttsBase.length },
         octetsEtat: stats.octetsEtat, octetsMaj: stats.octetsMaj, reprises: stats.reprises, reprisesCompletes: stats.reprisesCompletes,
         msBaseMoyen: nb ? Math.round(stats.msBaseTotal / nb) : null,
       }));
