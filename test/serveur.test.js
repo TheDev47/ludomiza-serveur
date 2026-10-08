@@ -442,3 +442,20 @@ test('droits : le rôle serveur_jeu lit les signaux par la fonction, jamais la t
     await c.end();
   }
 });
+
+test('présence : le serveur note « vu » et la salle d\'attente des joueurs à l\'écran, en une requête', async () => {
+  const [a, b] = await creerJoueurs(bd.su, 2);
+  const { rows } = await bd.su.query(`insert into games (code, host_id, mise, max_players, mode) values ('PRES01', $1, 100, 2, 'fast') returning id`, [a]);
+  const salle = rows[0].id;
+  await bd.su.query(`insert into game_players (game_id, player_id, color, play_order) values ($1, $2, 'yellow', 1), ($1, $3, 'red', 2)`, [salle, a, b]);
+  const ta = await ouvrirSession(a);
+  const tb = await ouvrirSession(b);
+  tb.ws.send(JSON.stringify({ t: 'visible', v: false }));   // b : appli en arrière-plan
+  await new Promise((r) => setTimeout(r, 100));
+  await serveur.noterPresence();
+  const vus = (await bd.su.query('select user_id from presence_vue where user_id = any($1)', [[a, b]])).rows.map((r) => r.user_id);
+  assert.deepEqual(vus, [a]);
+  const salleVu = (await bd.su.query('select player_id from game_players where game_id = $1 and salle_vu_le is not null', [salle])).rows.map((r) => r.player_id);
+  assert.deepEqual(salleVu, [a]);
+  ta.ws.close(); tb.ws.close();
+});

@@ -7,6 +7,7 @@
 //   _serveur_evenements : signaux hors partie (solde, notifications…)
 //   _serveur_pseudo     : pseudo d'un spectateur (signature des réactions)
 //   _serveur_est_admin  : la régie demande la liste des spectateurs
+//   _serveur_presence   : « vu il y a… » et présence en salle, pour tous les connectés
 // Chaque appel = un seul aller-retour avec la base.
 
 import pg from 'pg';
@@ -54,6 +55,11 @@ export function creerBase(adresse, { ssl, max = 8 } = {}) {
     async estAdmin(joueur) {
       const r = await pool.query('select public._serveur_est_admin($1::uuid) as a', [joueur]);
       return r.rows[0]?.a === true;
+    },
+    // Présence des joueurs qui ont l'appli ouverte (sql/07_serveur_presence.sql).
+    async presence(ids) {
+      const r = await pool.query('select public._serveur_presence($1::uuid[]) as n', [ids]);
+      return r.rows[0]?.n ?? 0;
     },
     async fermer() {
       await pool.end();

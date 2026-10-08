@@ -35,6 +35,7 @@ Téléphone → serveur :
 | `{t:'ping', c}` | Mesurer la latence |
 | `{t:'session', jeton}` | **Ligne directe** (0.4.0) : identifie le joueur pour toute la durée de l'appli, hors partie |
 | `{t:'en_ligne', ids, n}` | Parmi ces joueurs, lesquels ont l'appli ouverte ? |
+| `{t:'visible', v}` | (0.10.0) **Ligne directe** : l'appli passe à l'écran (`true`) ou en arrière-plan (`false`). Toutes les 30 s, le serveur note la présence (« vu il y a… », salle d'attente) des joueurs à l'écran en une seule requête (`_serveur_presence`, `sql/07_serveur_presence.sql`) ; `session_ok` porte alors `presence: true` et l'appli cesse d'appeler `noter_vu` / `salle_present` |
 
 Serveur → téléphone (ligne directe) : `session_ok`, `signaux` (liste de `[sujet, clé]` : `solde`, `notifications`, `amis`, `paiements`, `support`, `salon`, `tournoi`, `partie` — le téléphone relit alors la donnée par Supabase ; aucun contenu ne transite), `en_ligne`.
 

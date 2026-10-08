@@ -27,7 +27,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.9.0';
+export const VERSION = '0.10.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -85,6 +85,7 @@ export function creerServeur({
   toutesLesParties = false, // chronomètres aussi pour les parties sans téléphone connecté ici
   maxMessagesParSeconde = 30,
   signauxMs = 1000,
+  presenceMs = 30_000,
   journal = console,
 } = {}) {
   // Temps d'aller-retour serveur ↔ téléphone (ping du battement), 500 dernières mesures.
@@ -105,6 +106,7 @@ export function creerServeur({
   function ouvrirSession(ws, uid) {
     if (ws.session && ws.session !== uid) fermerSession(ws);
     ws.session = uid;
+    if (ws.visible === undefined) ws.visible = true;
     let s = sessions.get(uid);
     if (!s) { s = new Set(); sessions.set(uid, s); }
     s.add(ws);
@@ -113,6 +115,27 @@ export function creerServeur({
     const s = ws.session && sessions.get(ws.session);
     if (s) { s.delete(ws); if (!s.size) sessions.delete(ws.session); }
     ws.session = null;
+  }
+
+  // Présence (0.10.0) : « vu il y a… » et « présent en salle d'attente »,
+  // notés en UNE requête pour tous les joueurs qui ont l'appli ouverte et à
+  // l'écran. Les téléphones n'ont plus à appeler noter_vu / salle_present.
+  let presenceEnPauseJusqua = 0;
+  async function noterPresence() {
+    if (Date.now() < presenceEnPauseJusqua || sessions.size === 0) return;
+    const ids = [];
+    for (const [uid, set] of sessions) {
+      for (const w of set) { if (w.visible !== false) { ids.push(uid); break; } }
+    }
+    if (!ids.length) return;
+    try {
+      await base.presence(ids);
+      stats.presences = (stats.presences || 0) + 1;
+    } catch (e) {
+      stats.erreursBase++;
+      presenceEnPauseJusqua = Date.now() + 5 * 60_000;   // ex. SQL pas encore installé : on réessaie plus tard
+      journal.error('[présence]', e?.message ?? e);
+    }
   }
 
   // Journal des signaux : curseur + numéros déjà vus (la base relit une courte
@@ -614,9 +637,14 @@ export function creerServeur({
             if (!uid) { envoyer(ws, { t: 'refus', raison: 'jeton' }); ws.close(4001, 'jeton'); break; }
             if (ws.readyState !== 1) break;
             ouvrirSession(ws, uid);
-            envoyer(ws, { t: 'session_ok', uid, version: VERSION, s: Date.now() });
+            envoyer(ws, { t: 'session_ok', uid, version: VERSION, s: Date.now(), presence: true });
             break;
           }
+          case 'visible':
+            // L'appli passe à l'écran ou en arrière-plan : seule l'appli à
+            // l'écran compte comme « présente ».
+            ws.visible = m.v !== false;
+            break;
           case 'en_ligne': {
             // Qui, parmi ces joueurs, a l'appli ouverte en ce moment ?
             if (!ws.session) { envoyer(ws, { t: 'en_ligne', n: m.n, ids: [] }); break; }
@@ -684,6 +712,7 @@ export function creerServeur({
   }, 15_000);
   let minuterieSondage = null;
   let minuterieSignaux = null;
+  let minuteriePresence = null;
 
   return {
     parties,
@@ -694,12 +723,14 @@ export function creerServeur({
       minuterieSondage = setInterval(sonder, sondageMs);
       await lireSignaux();   // point de départ du journal
       minuterieSignaux = setInterval(lireSignaux, signauxMs);
+      minuteriePresence = setInterval(noterPresence, presenceMs);
       return serveurHttp.address().port;
     },
     async arreter() {
       clearInterval(battement);
       clearInterval(minuterieSondage);
       clearInterval(minuterieSignaux);
+      clearInterval(minuteriePresence);
       for (const p of parties.values()) clearTimeout(p.minuterie);
       for (const ws of wss.clients) ws.terminate();
       await new Promise((ok) => wss.close(() => ok()));
@@ -708,5 +739,6 @@ export function creerServeur({
     },
     sonder,
     lireSignaux,
+    noterPresence,
   };
 }
