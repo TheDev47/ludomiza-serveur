@@ -300,6 +300,18 @@ test('spectateurs : comptés à part, réactions relayées sans la base, aucune 
   const rep = await demander(jb);
   const { rows: [ps2] } = await bd.su.query('select pseudo from profiles where id = $1', [js]);
   assert.deepEqual(rep.parties[partie], [{ uid: js, pseudo: ps2.pseudo }]);
+  // Régie : état en direct d'une partie (pions), depuis la mémoire du serveur.
+  const suivre = (uid, id) => new Promise((ok) => {
+    const w = new WebSocket(url);
+    w.on('open', () => w.send(JSON.stringify({ t: 'admin_partie', jeton: jetonDe(uid), partie: id, n: 2 })));
+    w.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'admin_partie' || m.t === 'refus') { w.close(); ok(m); } });
+  });
+  assert.equal((await suivre(ja, partie)).raison, 'pas_admin');
+  const direct = await suivre(jb, partie);
+  assert.equal(direct.partie, partie);
+  assert.ok(Array.isArray(direct.seats) && direct.seats.length === 2, 'sièges en mémoire');
+  assert.ok(direct.seats.every((x) => Array.isArray(x.pawns)), 'pions présents');
+  assert.equal((await suivre(jb, '00000000-0000-0000-0000-000000000000')).absent, true);
   s3.fermer();
 
   // Partie privée (hors tournoi) : pas de spectateur.

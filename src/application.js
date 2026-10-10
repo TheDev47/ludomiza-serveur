@@ -28,7 +28,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.11.1';
+export const VERSION = '0.12.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -729,6 +729,17 @@ export function creerServeur({
             if (!uid || !(await estAdmin(uid))) { envoyer(ws, { t: 'refus', raison: 'pas_admin' }); ws.close(4003, 'admin'); break; }
             ws.adminUid = uid;
             envoyer(ws, { t: 'spectateurs', n: m.n, parties: listeSpectateurs(), s: Date.now() });
+            break;
+          }
+          case 'admin_partie': {
+            // (0.12.0) La régie suit une partie en direct : son état en mémoire (pions,
+            // tour, dé), sans aucune lecture en base. absent = personne n'y est connecté.
+            const uid = ws.adminUid || await verifierJeton(m.jeton);
+            if (!uid || !(await estAdmin(uid))) { envoyer(ws, { t: 'refus', raison: 'pas_admin' }); ws.close(4003, 'admin'); break; }
+            ws.adminUid = uid;
+            const p = typeof m.partie === 'string' ? parties.get(m.partie) : null;
+            if (!p?.etat) { envoyer(ws, { t: 'admin_partie', n: m.n, partie: m.partie, absent: true, s: Date.now() }); break; }
+            envoyer(ws, { t: 'admin_partie', n: m.n, partie: p.id, game: p.etat.game, seats: p.etat.seats, v: p.version, s: Date.now() });
             break;
           }
           case 'emoji':
