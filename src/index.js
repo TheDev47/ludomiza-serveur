@@ -14,6 +14,8 @@ import fs from 'node:fs';
 import { creerBase } from './base.js';
 import { verificateurSupabase } from './jetons.js';
 import { creerServeur, VERSION } from './application.js';
+import { creerArchiveChat } from './archiveChat.js';
+import path from 'node:path';
 
 const env = process.env;
 for (const cle of ['DATABASE_URL', 'SUPABASE_URL', 'SUPABASE_ANON_KEY']) {
@@ -38,6 +40,9 @@ const serveur = creerServeur({
   origines: ((o) => (o.length ? [...new Set([...o, 'https://regie.ludomiza.com'])] : o))(
     (env.ORIGINES || '').split(',').map((s) => s.trim()).filter(Boolean)),
   toutesLesParties: env.TOUTES_LES_PARTIES === 'oui',
+  // Chat archivé 30 jours sur le disque du serveur (dossier donné par systemd : StateDirectory=ludomiza)
+  archiveChat: creerArchiveChat(env.CHAT_DOSSIER || (env.STATE_DIRECTORY ? path.join(env.STATE_DIRECTORY.split(':')[0], 'chat') : null),
+    { jours: Number(env.CHAT_JOURS || 30) }),
 });
 
 const port = await serveur.demarrer();

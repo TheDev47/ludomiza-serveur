@@ -86,6 +86,8 @@ ProtectSystem=strict
 ProtectHome=true
 ReadOnlyPaths=/
 PrivateTmp=true
+# Seul dossier où le serveur peut écrire : /var/lib/ludomiza (archive du chat, 30 jours)
+StateDirectory=ludomiza
 
 [Install]
 WantedBy=multi-user.target

@@ -32,6 +32,7 @@ Téléphone → serveur :
 | `{t:'reaction', code, cible?}` | (0.7.0) **Spectateur** seulement : réaction toute prête (code court, ex. `feu`), éventuellement adressée à un joueur assis (`cible`, 0.8.0), relayée à toute la table sans rien écrire en base. Au plus une toutes les 2,5 s par spectateur et 12 par seconde par table |
 | `{t:'chat', texte, cible?}` | (0.11.0 ; `cible` 0.11.1 : joueur assis à qui le message est adressé) Message libre d'un **joueur ou d'un spectateur** (200 caractères, un par seconde). Vérifié avant tout envoi par `src/moderation.js` : numéro de téléphone (même en lettres, déguisé ou coupé sur plusieurs messages) → jamais diffusé, chat suspendu 24 h (`chat_suspensions`, seule écriture en base) ; lien ou e-mail → refusé ; insultes graves → `***`. Les 50 derniers messages de la partie restent en mémoire (`chat_historique` à l'arrivée) |
 | `{t:'admin_partie', jeton, partie, n}` | (0.12.0) **Régie** (jeton d'un compte admin) : état en mémoire d'une partie (`game` + `seats` : pions, tour, dé, tours manqués), sans lecture en base. Réponse `{t:'admin_partie', n, partie, game, seats, v}` ou `{…, absent: true}` si personne n'est connecté à cette partie |
+| `{t:'admin_chat', jeton, partie, depuis?, n}` | (0.13.0) **Régie** : tout le chat d'une partie (archive sur disque + derniers messages en mémoire). Chaque message : `id, de, pseudo, texte, brut?` (texte tapé s'il a été masqué), `spect, cible, a`. Les numéros bloqués ne sont jamais archivés |
 | `{t:'actualiser'}` | « J'ai changé la partie par Supabase » (rejoindre, revanche…) : le serveur relit et prévient la table |
 | `{t:'admin_spectateurs', jeton, n}` | (0.9.0) **Régie** : jeton d'un compte admin (vérifié une fois par `_serveur_est_admin`, gardé 5 min) ; réponse `{t:'spectateurs', parties: {id: [{uid, pseudo}]}}`. Rien n'est écrit en base |
 | `{t:'ping', c}` | Mesurer la latence |
@@ -52,3 +53,19 @@ Voir le haut de `src/index.js`. Les valeurs secrètes (`DATABASE_URL`) vont **un
 ## Tests
 
 `npm test` : parties complètes jouées par des robots sur une **copie locale** de la base (voir `test/LISEZ-MOI.md`), chronomètres, droits, sécurité, 20 parties simultanées.
+
+## Archive du chat (0.13.0)
+
+Les messages du chat sont gardés **30 jours sur le disque du serveur**, jamais en base :
+`/var/lib/ludomiza/chat/AAAA-MM-JJ.jsonl` (une ligne JSON par message), écrits au plus une fois par seconde,
+fichiers de plus de 30 jours supprimés automatiquement. La régie les lit par `admin_chat`.
+
+Le service systemd doit avoir `StateDirectory=ludomiza` (seul dossier où il peut écrire). Sur un serveur
+installé avant la 0.13.0, à faire une fois en root :
+
+```
+mkdir -p /etc/systemd/system/ludomiza-serveur.service.d && printf '[Service]\nStateDirectory=ludomiza\n' > /etc/systemd/system/ludomiza-serveur.service.d/chat.conf && systemctl daemon-reload && systemctl restart ludomiza-serveur
+```
+
+Sans ce dossier, le chat marche normalement mais n'est pas archivé (`archiveChat: false` dans `/sante`).
+Réglages facultatifs : `CHAT_DOSSIER` (autre dossier), `CHAT_JOURS` (durée de conservation).

@@ -4,17 +4,23 @@ import pg from 'pg';
 import WebSocket from 'ws';
 import { creerBase } from '../src/base.js';
 import { creerServeur, echeance } from '../src/application.js';
+import { creerArchiveChat } from '../src/archiveChat.js';
+import os from 'node:os';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
 import {
   creerBaseDeTest, creerJoueurs, creerPartie, verifierJetonDeTest, Robot, attendre, jetonDe,
 } from './aide.js';
 
-let bd, base, serveur, url;
+let bd, base, serveur, url, dossierChat;
 
 before(async () => {
   bd = await creerBaseDeTest();
   base = creerBase(bd.urlServeur, { ssl: false });
+  dossierChat = await fsp.mkdtemp(path.join(os.tmpdir(), 'lmz-chat-'));
   serveur = creerServeur({
     base, verifierJeton: verifierJetonDeTest, port: 0, hote: '127.0.0.1',
+    archiveChat: creerArchiveChat(dossierChat, { journal: { error: () => {} } }),
     sondageMs: 300, journal: { error: () => {}, log: () => {} },
   });
   const port = await serveur.demarrer();
@@ -25,6 +31,7 @@ after(async () => {
   await serveur.arreter();
   await base.fermer();
   await bd.detruire();
+  await fsp.rm(dossierChat, { recursive: true, force: true });
 });
 
 async function soldes(ids) {
@@ -515,5 +522,22 @@ test('chat : relayé à la table (joueurs et spectateurs), numéro bloqué et ch
     w.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'chat_historique') { w.close(); ok(m); } });
   });
   assert.deepEqual(hist.messages.map((m) => m.texte), ['Bien joué espèce de ***', 'allez Kamdem 🔥']);
+
+  // Régie : le chat archivé sur disque (texte tapé gardé quand il a été masqué), refusé aux non-admins
+  const lireChat = (uid) => new Promise((ok) => {
+    const w = new WebSocket(url);
+    w.on('open', () => w.send(JSON.stringify({ t: 'admin_chat', jeton: jetonDe(uid), partie, n: 1 })));
+    w.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'admin_chat' || m.t === 'refus') { w.close(); ok(m); } });
+  });
+  assert.equal((await lireChat(ja)).raison, 'pas_admin');
+  await bd.su.query('update profiles set is_admin = true where id = $1', [js]);
+  await new Promise((r) => setTimeout(r, 1200));   // écriture disque regroupée (1 s)
+  const archive = await lireChat(js);
+  assert.equal(archive.archive, true);
+  assert.deepEqual(archive.messages.map((m) => m.texte), ['Bien joué espèce de ***', 'allez Kamdem 🔥']);
+  assert.equal(archive.messages[0].brut, 'Bien joué espèce de connard');
+  const fichiers = await fsp.readdir(dossierChat);
+  assert.equal(fichiers.length, 1);
+  assert.ok(!(await fsp.readFile(path.join(dossierChat, fichiers[0]), 'utf8')).includes('six neuf'), 'numéro jamais archivé');
   a.fermer(); b.fermer(); s.fermer();
 });

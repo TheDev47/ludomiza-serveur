@@ -28,7 +28,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.12.0';
+export const VERSION = '0.13.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -88,6 +88,7 @@ export function creerServeur({
   signauxMs = 1000,
   presenceMs = 30_000,
   journal = console,
+  archiveChat = null, // (0.13.0) archive du chat sur disque, voir src/archiveChat.js
 } = {}) {
   // Temps d'aller-retour serveur ↔ téléphone (ping du battement), 500 dernières mesures.
   const rtts = [];
@@ -352,6 +353,7 @@ export function creerServeur({
     if (p.chat.length > 50) p.chat.shift();
     stats.chat = (stats.chat || 0) + 1;
     diffuser(p, msg);
+    archiveChat?.ajouter(msg, m.texte.trim());
   }
 
   // Régie : liste des spectateurs de chaque partie (administrateurs seulement).
@@ -626,6 +628,7 @@ export function creerServeur({
         latenceBaseMs: { mediane: centile(rttsBase, 0.5), p90: centile(rttsBase, 0.9), mesures: rttsBase.length },
         octetsEtat: stats.octetsEtat, octetsMaj: stats.octetsMaj, reprises: stats.reprises, reprisesCompletes: stats.reprisesCompletes,
         msBaseMoyen: nb ? Math.round(stats.msBaseTotal / nb) : null,
+        archiveChat: Boolean(archiveChat?.actif),
       }));
       return;
     }
@@ -742,6 +745,21 @@ export function creerServeur({
             envoyer(ws, { t: 'admin_partie', n: m.n, partie: p.id, game: p.etat.game, seats: p.etat.seats, v: p.version, s: Date.now() });
             break;
           }
+          case 'admin_chat': {
+            // (0.13.0) La régie lit le chat d'une partie : archive sur disque + derniers messages en mémoire.
+            const uid = ws.adminUid || await verifierJeton(m.jeton);
+            if (!uid || !(await estAdmin(uid))) { envoyer(ws, { t: 'refus', raison: 'pas_admin' }); ws.close(4003, 'admin'); break; }
+            ws.adminUid = uid;
+            const id = typeof m.partie === 'string' ? m.partie : '';
+            const depuis = Number.isFinite(Date.parse(m.depuis)) ? Date.parse(m.depuis) : Date.now();
+            const archives = archiveChat && id ? await archiveChat.lirePartie(id, depuis) : [];
+            const vus = new Set(archives.map((x) => x.id));
+            const memoire = (parties.get(id)?.chat || []).filter((x) => !vus.has(x.id))
+              .map(({ partie, id: i, de, pseudo, texte, spect, cible, a }) => ({ partie, id: i, de, pseudo, texte, spect, cible, a }));
+            envoyer(ws, { t: 'admin_chat', n: m.n, partie: id, messages: [...archives, ...memoire].sort((x, y) => x.a - y.a),
+                          archive: Boolean(archiveChat?.actif), s: Date.now() });
+            break;
+          }
           case 'emoji':
             if (ws.spectateur) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'spectateur' }); break; }
             if (!ws.partie) { envoyer(ws, { t: 'reponse', n: m.n, ok: false, erreur: 'non_identifie' }); break; }
@@ -808,6 +826,7 @@ export function creerServeur({
       await new Promise((ok) => wss.close(() => ok()));
       await new Promise((ok) => serveurHttp.close(() => ok()));
       await Promise.all([...parties.values()].map((p) => p.file));
+      await archiveChat?.fermer();
     },
     sonder,
     lireSignaux,
