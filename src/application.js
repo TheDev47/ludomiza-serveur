@@ -28,7 +28,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.11.0';
+export const VERSION = '0.11.1';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -344,8 +344,10 @@ export function creerServeur({
       return;
     }
     const pseudo = ws.pseudo || (ws.pseudo = await pseudoDe(ws.uid)) || null;
+    // Message adressé à un joueur assis (facultatif) : tout le monde le voit, le début s'affiche sur sa carte
+    const cible = typeof m.cible === 'string' && m.cible !== ws.uid && p.etat?.seats?.some((x) => x.player_id === m.cible) ? m.cible : null;
     const msg = { t: 'chat', partie: p.id, id: `${t.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-                  de: ws.uid, pseudo, texte: v.texte, spect: Boolean(ws.spectateur), a: t };
+                  de: ws.uid, pseudo, texte: v.texte, spect: Boolean(ws.spectateur), cible, a: t };
     p.chat.push(msg);
     if (p.chat.length > 50) p.chat.shift();
     stats.chat = (stats.chat || 0) + 1;

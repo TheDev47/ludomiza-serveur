@@ -478,8 +478,9 @@ test('chat : relayé à la table (joueurs et spectateurs), numéro bloqué et ch
   const m1 = vusS.find((m) => m.t === 'chat');
   assert.equal(m1.de, ja); assert.equal(m1.texte, 'Bien joué espèce de ***'); assert.equal(m1.spect, false);
 
-  s.envoyer({ t: 'chat', texte: 'allez Kamdem 🔥' });
+  s.envoyer({ t: 'chat', texte: 'allez Kamdem 🔥', cible: ja });
   await attendre(() => vusA.some((m) => m.t === 'chat' && m.spect === true), 2000);
+  assert.equal(vusA.find((m) => m.t === 'chat' && m.spect).cible, ja, 'message adressé à un joueur assis');
 
   // Numéro : jamais transmis, l'auteur est suspendu
   b.envoyer({ t: 'chat', texte: 'écris moi au six neuf neuf 12 34 56 78' });
