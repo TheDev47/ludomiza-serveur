@@ -8,6 +8,7 @@
 //   _serveur_pseudo     : pseudo d'un spectateur (signature des réactions)
 //   _serveur_est_admin  : la régie demande la liste des spectateurs
 //   _serveur_presence   : « vu il y a… » et présence en salle, pour tous les connectés
+//   _serveur_chat_etat / _serveur_chat_suspendre : suspensions du chat (numéro envoyé)
 // Chaque appel = un seul aller-retour avec la base.
 
 import pg from 'pg';
@@ -60,6 +61,15 @@ export function creerBase(adresse, { ssl, max = 8 } = {}) {
     async presence(ids) {
       const r = await pool.query('select public._serveur_presence($1::uuid[]) as n', [ids]);
       return r.rows[0]?.n ?? 0;
+    },
+    // Chat : fin de la suspension en cours (Date) ou null ; suspendre 24 h (sql/08_serveur_chat.sql).
+    async chatEtat(joueur) {
+      const r = await pool.query('select public._serveur_chat_etat($1::uuid) as j', [joueur]);
+      return r.rows[0]?.j ?? null;
+    },
+    async chatSuspendre(joueur, partie, message, motif) {
+      const r = await pool.query('select public._serveur_chat_suspendre($1::uuid, $2::uuid, $3, $4) as j', [joueur, partie, message, motif]);
+      return r.rows[0]?.j ?? null;
     },
     async fermer() {
       await pool.end();

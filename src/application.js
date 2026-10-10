@@ -21,13 +21,14 @@
 // signal dit seulement « relis ceci ». L'appli n'a alors plus besoin du temps
 // réel de Supabase, limité en formule gratuite.
 
+import { verifierMessage, LONGUEUR_MAX } from './moderation.js';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.10.1';
+export const VERSION = '0.11.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -202,7 +203,8 @@ export function creerServeur({
     if (!p) {
       p = { id, etat: null, sig: '', version: 0, clients: new Set(), file: Promise.resolve(),
             occupe: 0, minuterie: null, decalage: 0, essaisForce: 0,
-            historique: [], delta: null };   // historique : [{ v, etat }] ; delta : dernière différence
+            historique: [], delta: null,   // historique : [{ v, etat }] ; delta : dernière différence
+            chat: [], memoiresChat: new Map() };   // chat : 50 derniers messages ; mémoire anti-numéro par joueur
       parties.set(id, p);
     }
     return p;
@@ -301,6 +303,53 @@ export function creerServeur({
     stats.reactions = (stats.reactions || 0) + 1;
     diffuser(p, { t: 'reaction', partie: p.id, code: m.code, de: ws.uid, pseudo: ws.pseudo || null, cible,
                   id: `${t.toString(36)}${Math.random().toString(36).slice(2, 6)}` });
+  }
+
+  // ------------------------------------------------------------------ chat ----
+  // Message libre d'un joueur ou d'un spectateur : vérifié (numéro, lien, insultes)
+  // AVANT d'être relayé. Rien n'est écrit en base, sauf une suspension.
+  const suspensions = new Map();   // uid -> { jusqua: ms|0, fin: ms (cache) }
+  async function suspenduJusqua(uid) {
+    const c = suspensions.get(uid);
+    if (c && c.fin > Date.now()) return c.jusqua > Date.now() ? c.jusqua : 0;
+    let j = 0;
+    try { const d = await base.chatEtat(uid); j = d ? Date.parse(d) : 0; } catch (e) { journal.error('[chat]', e?.message ?? e); }
+    if (suspensions.size > 5000) suspensions.clear();
+    suspensions.set(uid, { jusqua: j, fin: Date.now() + 5 * 60_000 });
+    return j;
+  }
+  async function relayerChat(ws, m) {
+    const p = ws.partie;
+    if (!p || !ws.uid) return;
+    const t = Date.now();
+    if (ws.dernierChat && t - ws.dernierChat < 1000) { envoyer(ws, { t: 'chat_refus', raison: 'trop_vite' }); return; }
+    if (typeof m.texte !== 'string' || !m.texte.trim()) return;
+    ws.dernierChat = t;
+    const jusqua = await suspenduJusqua(ws.uid);
+    if (jusqua) { envoyer(ws, { t: 'chat_refus', raison: 'suspendu', jusqua: new Date(jusqua).toISOString() }); return; }
+    let mem = p.memoiresChat.get(ws.uid);
+    if (!mem) { mem = {}; p.memoiresChat.set(ws.uid, mem); }
+    const v = verifierMessage(m.texte.slice(0, LONGUEUR_MAX * 2), mem, t);
+    if (!v.ok) {
+      if (v.sanction === 'suspension') {
+        let fin = t + 24 * 3600_000;
+        try { const d = await base.chatSuspendre(ws.uid, p.id, m.texte.slice(0, 300), v.raison); if (d) fin = Date.parse(d); }
+        catch (e) { journal.error('[chat]', e?.message ?? e); }
+        suspensions.set(ws.uid, { jusqua: fin, fin: fin });
+        stats.chatSuspensions = (stats.chatSuspensions || 0) + 1;
+        envoyer(ws, { t: 'chat_refus', raison: v.raison, suspension: true, jusqua: new Date(fin).toISOString() });
+      } else if (v.raison !== 'vide') {
+        envoyer(ws, { t: 'chat_refus', raison: v.raison });
+      }
+      return;
+    }
+    const pseudo = ws.pseudo || (ws.pseudo = await pseudoDe(ws.uid)) || null;
+    const msg = { t: 'chat', partie: p.id, id: `${t.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+                  de: ws.uid, pseudo, texte: v.texte, spect: Boolean(ws.spectateur), a: t };
+    p.chat.push(msg);
+    if (p.chat.length > 50) p.chat.shift();
+    stats.chat = (stats.chat || 0) + 1;
+    diffuser(p, msg);
   }
 
   // Régie : liste des spectateurs de chaque partie (administrateurs seulement).
@@ -506,6 +555,7 @@ export function creerServeur({
     planifier(p);
     if (p.etat) envoyerEtatA(ws, p, 'initial', { ep: m.ep, v: Number(m.v) });
     else envoyer(ws, messageEtat({ ...p, etat: e }, 'initial'));
+    if (p.chat.length) envoyer(ws, { t: 'chat_historique', partie: p.id, messages: p.chat });
     diffuserPresence(p);
   }
 
@@ -667,6 +717,9 @@ export function creerServeur({
             break;
           case 'reaction':
             relayerReaction(ws, m);
+            break;
+          case 'chat':
+            await relayerChat(ws, m);
             break;
           case 'admin_spectateurs': {
             // La régie (jeton d'un compte admin) : qui regarde quelle partie.

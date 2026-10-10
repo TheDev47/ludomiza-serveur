@@ -459,3 +459,48 @@ test('présence : le serveur note « vu » et la salle d\'attente des joueurs à
   assert.deepEqual(salleVu, [a]);
   ta.ws.close(); tb.ws.close();
 });
+
+test('chat : relayé à la table (joueurs et spectateurs), numéro bloqué et chat suspendu 24 h', async () => {
+  const [ja, jb, js] = await creerJoueurs(bd.su, 3);
+  const partie = await creerPartie(bd.su, [ja, jb]);
+  const vusA = [], vusS = [];
+  const a = await new Robot(ja, { dort: true }).connecter(url, partie);
+  a.ws.on('message', (d) => { const m = JSON.parse(d); if (m.t.startsWith('chat')) vusA.push(m); });
+  const b = await new Robot(jb, { dort: true }).connecter(url, partie);
+  const vusB = [];
+  b.ws.on('message', (d) => { const m = JSON.parse(d); if (m.t.startsWith('chat')) vusB.push(m); });
+  const s = await new Robot(js, { dort: true, spectateur: true }).connecter(url, partie);
+  s.ws.on('message', (d) => { const m = JSON.parse(d); if (m.t.startsWith('chat')) vusS.push(m); });
+  await attendre(() => s.etat?.game, 2000);
+
+  a.envoyer({ t: 'chat', texte: 'Bien joué espèce de connard' });
+  await attendre(() => vusS.some((m) => m.t === 'chat'), 2000);
+  const m1 = vusS.find((m) => m.t === 'chat');
+  assert.equal(m1.de, ja); assert.equal(m1.texte, 'Bien joué espèce de ***'); assert.equal(m1.spect, false);
+
+  s.envoyer({ t: 'chat', texte: 'allez Kamdem 🔥' });
+  await attendre(() => vusA.some((m) => m.t === 'chat' && m.spect === true), 2000);
+
+  // Numéro : jamais transmis, l'auteur est suspendu
+  b.envoyer({ t: 'chat', texte: 'écris moi au six neuf neuf 12 34 56 78' });
+  await attendre(() => vusB.some((m) => m.t === 'chat_refus'), 2000);
+  const refus = vusB.find((m) => m.t === 'chat_refus');
+  assert.equal(refus.raison, 'numero'); assert.equal(refus.suspension, true); assert.ok(refus.jusqua);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(!vusA.some((m) => m.t === 'chat' && m.de === jb), 'le numéro n\'est jamais diffusé');
+  const { rows: [sp] } = await bd.su.query('select count(*)::int n from chat_suspensions where user_id = $1', [jb]);
+  assert.equal(sp.n, 1);
+  await new Promise((r) => setTimeout(r, 1100));
+  b.envoyer({ t: 'chat', texte: 'bonjour' });
+  await attendre(() => vusB.filter((m) => m.t === 'chat_refus').length === 2, 2000);
+  assert.equal(vusB.filter((m) => m.t === 'chat_refus')[1].raison, 'suspendu');
+
+  // Historique pour celui qui arrive : les messages de la partie, sans le numéro
+  const hist = await new Promise((ok) => {
+    const w = new WebSocket(url);
+    w.on('open', () => w.send(JSON.stringify({ t: 'bonjour', jeton: jetonDe(js), partie, spectateur: true, proto: 2 })));
+    w.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'chat_historique') { w.close(); ok(m); } });
+  });
+  assert.deepEqual(hist.messages.map((m) => m.texte), ['Bien joué espèce de ***', 'allez Kamdem 🔥']);
+  a.fermer(); b.fermer(); s.fermer();
+});
