@@ -28,7 +28,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.13.0';
+export const VERSION = '0.14.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -116,7 +116,11 @@ export function creerServeur({
     if (!s) { s = new Set(); sessions.set(uid, s); }
     s.add(ws);
   }
+  // (0.14.0) Régie : écrans d'administration abonnés aux signaux « regie »
+  // (parties, paiements, comptes, support). Ces signaux ne vont JAMAIS aux joueurs.
+  const regies = new Set();
   function fermerSession(ws) {
+    regies.delete(ws);
     const s = ws.session && sessions.get(ws.session);
     if (s) { s.delete(ws); if (!s.size) sessions.delete(ws.session); }
     ws.session = null;
@@ -158,7 +162,7 @@ export function creerServeur({
         curseur = Number(r.dernier) || 0;
         return;
       }
-      if (sessions.size === 0) {
+      if (sessions.size === 0 && regies.size === 0) {
         // Personne à prévenir : on avance le curseur sans rien envoyer.
         const r = await base.evenements(null);
         curseur = Math.max(curseur, Number(r.dernier) || 0);
@@ -177,7 +181,9 @@ export function creerServeur({
       for (const [id, uid, sujet, cle] of r.evts || []) {
         if (vus.has(id)) continue;
         vus.set(id, maintenant);
-        if (uid == null) {
+        if (sujet === 'regie') {
+          for (const ws of regies) ajouter(ws, sujet, cle);
+        } else if (uid == null) {
           for (const set of sessions.values()) for (const ws of set) ajouter(ws, sujet, cle);
         } else {
           for (const ws of sessions.get(uid) || []) ajouter(ws, sujet, cle);
@@ -732,6 +738,16 @@ export function creerServeur({
             if (!uid || !(await estAdmin(uid))) { envoyer(ws, { t: 'refus', raison: 'pas_admin' }); ws.close(4003, 'admin'); break; }
             ws.adminUid = uid;
             envoyer(ws, { t: 'spectateurs', n: m.n, parties: listeSpectateurs(), s: Date.now() });
+            break;
+          }
+          case 'admin_suivre': {
+            // (0.14.0) La régie veut être prévenue à l'instant : partie lancée ou finie,
+            // paiement, nouveau compte, message au support. Elle relit alors ses chiffres.
+            const uid = ws.adminUid || await verifierJeton(m.jeton);
+            if (!uid || !(await estAdmin(uid))) { envoyer(ws, { t: 'refus', raison: 'pas_admin' }); ws.close(4003, 'admin'); break; }
+            ws.adminUid = uid;
+            regies.add(ws);
+            envoyer(ws, { t: 'admin_suivi', n: m.n, s: Date.now() });
             break;
           }
           case 'admin_partie': {

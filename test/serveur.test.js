@@ -541,3 +541,35 @@ test('chat : relayé à la table (joueurs et spectateurs), numéro bloqué et ch
   assert.ok(!(await fsp.readFile(path.join(dossierChat, fichiers[0]), 'utf8')).includes('six neuf'), 'numéro jamais archivé');
   a.fermer(); b.fermer(); s.fermer();
 });
+
+test('régie : signaux « regie » pour les écrans admin seulement, jamais pour les joueurs', async () => {
+  const [a, adm] = await creerJoueurs(bd.su, 2);
+  await bd.su.query('update profiles set is_admin = true where id = $1', [adm]);
+  const sa = await ouvrirSession(a);
+  // un joueur ordinaire ne peut pas s'abonner
+  const essai = (uid) => new Promise((ok) => {
+    const w = new WebSocket(url);
+    const r = { w, signaux: [], reponse: null };
+    w.on('open', () => w.send(JSON.stringify({ t: 'admin_suivre', jeton: jetonDe(uid), n: 1 })));
+    w.on('message', (d) => {
+      const m = JSON.parse(d);
+      if (m.t === 'admin_suivi' || m.t === 'refus') { r.reponse = m; ok(r); }
+      if (m.t === 'signaux') r.signaux.push(...m.liste);
+    });
+  });
+  const refus = await essai(a);
+  assert.equal(refus.reponse.raison, 'pas_admin');
+  const regie = await essai(adm);
+  assert.equal(regie.reponse.t, 'admin_suivi');
+  const t0 = Date.now();
+  const { rows } = await bd.su.query(`insert into games (code, host_id, mise, max_players, mode) values ('REG001', $1, 100, 2, 'fast') returning id`, [a]);
+  await bd.su.query(`insert into payment_requests (user_id, kind, amount, operator, phone) values ($1, 'deposit', 500, 'mtn', '677000000')`, [a]);
+  await bd.su.query(`insert into support_chat (user_id, sender, body) values ($1, 'user', 'aide')`, [a]);
+  const vu = (cle) => regie.signaux.some(([x, c]) => x === 'regie' && c === cle);
+  await attendre(() => vu('parties') && vu('paiements') && vu('support'), 3000);
+  console.log(`  régie prévenue en ${Date.now() - t0} ms`);
+  await bd.su.query(`update games set status = 'playing' where id = $1`, [rows[0].id]);
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.ok(!aRecu(sa, 'regie'), 'un joueur ne reçoit jamais les signaux de la régie');
+  sa.ws.close(); regie.w.close(); refus.w.close();
+});
