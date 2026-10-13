@@ -28,7 +28,7 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer } from 'ws';
 import { difference } from './delta.js';
 
-export const VERSION = '0.14.0';
+export const VERSION = '0.15.0';
 
 // Depuis 0.5.0 (protocole 2, annoncé par le téléphone dans « bonjour ») :
 //   - chaque état porte un numéro de version « v » et l'« époque » du serveur
@@ -119,6 +119,21 @@ export function creerServeur({
   // (0.14.0) Régie : écrans d'administration abonnés aux signaux « regie »
   // (parties, paiements, comptes, support). Ces signaux ne vont JAMAIS aux joueurs.
   const regies = new Set();
+  // (0.15.0) Joueurs connectés, pour la régie : un élément par joueur, ses connexions dedans
+  // (la ligne directe de l'appli, et la partie ouverte s'il y en a une). La régie elle-même n'y est pas.
+  function listeConnectes() {
+    const parJoueur = new Map();
+    for (const w of wss.clients) {
+      const joueur = w.session || w.uid;
+      if (!joueur) continue;
+      let j = parJoueur.get(joueur);
+      if (!j) { j = { uid: joueur, appareils: [] }; parJoueur.set(joueur, j); }
+      if (w.partie && !j.partie) { j.partie = w.partie.id; j.spectateur = Boolean(w.spectateur); }
+      j.appareils.push({ ua: w.ua || '', depuis: w.depuis || null, visible: w.visible !== false, ligne: Boolean(w.session), partie: w.partie?.id || null });
+    }
+    const debut = (j) => Math.min(...j.appareils.map((x) => x.depuis || Date.now()));
+    return [...parJoueur.values()].sort((x, y) => debut(x) - debut(y));
+  }
   function fermerSession(ws) {
     regies.delete(ws);
     const s = ws.session && sessions.get(ws.session);
@@ -663,6 +678,9 @@ export function creerServeur({
     ws.vivant = true;
     ws.fenetre = Date.now();
     ws.compte = 0;
+    // (0.15.0) Pour la liste des connectés de la régie : appareil et heure d'arrivée
+    ws.depuis = Date.now();
+    ws.ua = String(req.headers['user-agent'] || '').slice(0, 300);
     ws.on('pong', () => {
       ws.vivant = true;
       if (ws.pingA) { noterRtt(Date.now() - ws.pingA); ws.pingA = 0; }
@@ -748,6 +766,15 @@ export function creerServeur({
             ws.adminUid = uid;
             regies.add(ws);
             envoyer(ws, { t: 'admin_suivi', n: m.n, s: Date.now() });
+            break;
+          }
+          case 'admin_connectes': {
+            // (0.15.0) La régie : joueurs qui ont l'appli ouverte, avec chacun de leurs appareils
+            // (navigateur ou appli, à l'écran ou non, partie en cours). Rien n'est lu ni écrit en base.
+            const uid = ws.adminUid || await verifierJeton(m.jeton);
+            if (!uid || !(await estAdmin(uid))) { envoyer(ws, { t: 'refus', raison: 'pas_admin' }); ws.close(4003, 'admin'); break; }
+            ws.adminUid = uid;
+            envoyer(ws, { t: 'connectes', n: m.n, joueurs: listeConnectes(), connexions: wss.clients.size, s: Date.now() });
             break;
           }
           case 'admin_partie': {

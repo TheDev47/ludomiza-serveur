@@ -36,6 +36,7 @@ Téléphone → serveur :
 | `{t:'admin_suivre', jeton, n}` | (0.14.0) **Régie** : s'abonne aux signaux `regie` (clés `parties`, `paiements`, `joueurs`, `support`), envoyés dans `{t:'signaux'}` à l'instant où la base change. Réservé aux administrateurs ; jamais envoyé aux téléphones des joueurs (`sql/09_regie_signaux.sql`) |
 | `{t:'actualiser'}` | « J'ai changé la partie par Supabase » (rejoindre, revanche…) : le serveur relit et prévient la table |
 | `{t:'admin_spectateurs', jeton, n}` | (0.9.0) **Régie** : jeton d'un compte admin (vérifié une fois par `_serveur_est_admin`, gardé 5 min) ; réponse `{t:'spectateurs', parties: {id: [{uid, pseudo}]}}`. Rien n'est écrit en base |
+| `{t:'admin_connectes', jeton, n}` | (0.15.0) **Régie** : joueurs qui ont l'appli ouverte. Réponse `{t:'connectes', n, connexions, joueurs: [{uid, partie?, spectateur?, appareils: [{ua, depuis, visible, ligne, partie}]}]}` (`ua` : appareil et navigateur, `depuis` : heure d'arrivée, `visible` : appli à l'écran). Rien n'est lu ni écrit en base |
 | `{t:'ping', c}` | Mesurer la latence |
 | `{t:'session', jeton}` | **Ligne directe** (0.4.0) : identifie le joueur pour toute la durée de l'appli, hors partie |
 | `{t:'en_ligne', ids, n}` | Parmi ces joueurs, lesquels ont l'appli ouverte ? |
