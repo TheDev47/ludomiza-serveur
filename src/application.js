@@ -87,6 +87,7 @@ export function creerServeur({
   maxMessagesParSeconde = 30,
   signauxMs = 1000,
   presenceMs = 30_000,
+  accueilMs = 20_000, // (0.18.0) relecture des listes de l'accueil tant que quelqu'un les regarde
   minuteriesMs = 2000, // (0.17.0) fin des parties chrono + départ des tournois ; 0 = désactivé
   journal = console,
   archiveChat = null, // (0.13.0) archive du chat sur disque, voir src/archiveChat.js
@@ -146,6 +147,65 @@ export function creerServeur({
   // notés en UNE requête pour tous les joueurs qui ont l'appli ouverte et à
   // l'écran. Les téléphones n'ont plus à appeler noter_vu / salle_present.
   let presenceEnPauseJusqua = 0;
+  // Accueil partagé (0.18.0) : listes « Ouvertes » et « En cours » de l'accueil.
+  // Le serveur les lit UNE fois (à chaque signal « salon », et toutes les 20 s tant
+  // que quelqu'un regarde l'accueil) et les envoie à tous les téléphones abonnés,
+  // au lieu que chaque téléphone les relise chez Supabase toutes les 8 à 30 s.
+  // Le nombre de spectateurs vient de la mémoire du serveur, à jour à la seconde.
+  const abonnesAccueil = new Set();   // ws (ligne directe identifiée)
+  let accueil = null;                 // { d, json, le }
+  let accueilEnCours = false;
+  let accueilAFaire = false;
+  let accueilMinuteur = null;
+  let accueilEnPauseJusqua = 0;
+  function avecSpectateurs(d) {
+    for (const g of d.en_cours || []) {
+      const p = parties.get(g.id);
+      if (p) g.spectateurs = nbSpectateurs(p);
+    }
+    return d;
+  }
+  function envoyerAccueil(d, json) {
+    const txt = `{"t":"accueil","d":${json}}`;
+    for (const ws of abonnesAccueil) if (ws.readyState === 1) ws.send(txt);
+    stats.accueils = (stats.accueils || 0) + abonnesAccueil.size;
+  }
+  async function rafraichirAccueil() {
+    if (!base.accueil || abonnesAccueil.size === 0 || Date.now() < accueilEnPauseJusqua) return;
+    if (accueilEnCours) { accueilAFaire = true; return; }
+    accueilEnCours = true;
+    try {
+      const d = avecSpectateurs(await base.accueil());
+      const json = JSON.stringify(d);
+      const change = !accueil || accueil.json !== json;
+      accueil = { d, json, le: Date.now() };
+      if (change) envoyerAccueil(d, json);
+    } catch (e) {
+      stats.erreursBase++;
+      accueilEnPauseJusqua = Date.now() + 60_000;   // ex. SQL pas encore installé : les téléphones relisent eux-mêmes
+      journal.error('[accueil]', e?.message ?? e);
+    } finally {
+      accueilEnCours = false;
+      if (accueilAFaire) { accueilAFaire = false; planifierAccueil(); }
+    }
+  }
+  function planifierAccueil(ms = 700) {
+    if (accueilMinuteur) return;
+    accueilMinuteur = setTimeout(() => { accueilMinuteur = null; rafraichirAccueil(); }, ms);
+  }
+  // Un spectateur arrive ou part : on renvoie la liste en mémoire, sans relire la base.
+  function accueilSpectateurs() {
+    if (!accueil || abonnesAccueil.size === 0) return;
+    const json = JSON.stringify(avecSpectateurs(accueil.d));
+    if (json !== accueil.json) { accueil.json = json; envoyerAccueil(accueil.d, json); }
+  }
+  function abonnerAccueil(ws, on) {
+    if (!on || !ws.session) { abonnesAccueil.delete(ws); return; }
+    abonnesAccueil.add(ws);
+    if (accueil && Date.now() - accueil.le < 20_000) envoyer(ws, { t: 'accueil', d: accueil.d });
+    else planifierAccueil(0);
+  }
+
   // Spectateurs (0.16.0) : nombre de personnes qui regardent chaque partie, noté
   // dans la base (au rythme de la présence, seulement quand ça change, et au moins
   // toutes les 2 min) pour la liste « En cours » de l'accueil.
@@ -241,6 +301,7 @@ export function creerServeur({
       for (const [id, uid, sujet, cle] of r.evts || []) {
         if (vus.has(id)) continue;
         vus.set(id, maintenant);
+        if (sujet === 'salon') planifierAccueil();
         if (sujet === 'regie') {
           for (const ws of regies) ajouter(ws, sujet, cle);
         } else if (uid == null) {
@@ -354,7 +415,7 @@ export function creerServeur({
   function diffuserPresence(p) {
     diffuser(p, { t: 'presence', partie: p.id, connectes: connectes(p), spectateurs: nbSpectateurs(p) });
     // le nombre de spectateurs est noté dans la base peu après (regroupé sur 3 s)
-    if (!minuteurSpectateurs) minuteurSpectateurs = setTimeout(() => { minuteurSpectateurs = null; noterSpectateurs(); }, 3000);
+    if (!minuteurSpectateurs) minuteurSpectateurs = setTimeout(() => { minuteurSpectateurs = null; noterSpectateurs(); accueilSpectateurs(); }, 3000);
   }
 
   // Réaction d'un spectateur (message tout prêt) : relayée à toute la table,
@@ -735,6 +796,7 @@ export function creerServeur({
     });
     ws.on('error', () => {});
     ws.on('close', () => {
+      abonnesAccueil.delete(ws);
       fermerSession(ws);
       if (!ws.partie) return;
       ws.partie.clients.delete(ws);
@@ -773,6 +835,10 @@ export function creerServeur({
             envoyer(ws, { t: 'session_ok', uid, version: VERSION, s: Date.now(), presence: true });
             break;
           }
+          case 'accueil':
+            // (0.18.0) l'accueil est à l'écran (on: true) ou ne l'est plus
+            abonnerAccueil(ws, m.on === true);
+            break;
           case 'visible':
             // L'appli passe à l'écran ou en arrière-plan : seule l'appli à
             // l'écran compte comme « présente ».
@@ -895,6 +961,7 @@ export function creerServeur({
   let minuterieSignaux = null;
   let minuteriePresence = null;
   let minuterieMinuteries = null;
+  let minuterieAccueil = null;
 
   return {
     parties,
@@ -907,6 +974,7 @@ export function creerServeur({
       minuterieSignaux = setInterval(lireSignaux, signauxMs);
       minuteriePresence = setInterval(noterPresence, presenceMs);
       if (minuteriesMs > 0) minuterieMinuteries = setInterval(lancerMinuteries, minuteriesMs);
+      minuterieAccueil = setInterval(() => { if (abonnesAccueil.size) rafraichirAccueil(); }, accueilMs);
       return serveurHttp.address().port;
     },
     async arreter() {
@@ -915,6 +983,8 @@ export function creerServeur({
       clearInterval(minuterieSignaux);
       clearInterval(minuteriePresence);
       clearInterval(minuterieMinuteries);
+      clearInterval(minuterieAccueil);
+      clearTimeout(accueilMinuteur);
       clearTimeout(minuteurSpectateurs);
       for (const p of parties.values()) clearTimeout(p.minuterie);
       for (const ws of wss.clients) ws.terminate();

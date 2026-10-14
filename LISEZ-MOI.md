@@ -15,6 +15,8 @@ Petit programme Node.js qui rend les parties en ligne fluides.
 
 - **Minuteries (0.17.0)** : toutes les 2 s, il appelle `_serveur_minuteries` (fin des parties chrono à l'heure + départ des tournois, voir `sql/11_serveur_minuteries.sql`). Les tâches pg_cron équivalentes ne passent plus que toutes les 30 s, en filet de sécurité : chaque exécution pg_cron écrit deux lignes de journal chez Supabase (quota « Log Ingestion »).
 
+- **Accueil partagé (0.18.0)** : un téléphone dont l'accueil est à l'écran envoie `{t:'accueil', on:true}` (`on:false` en le quittant). Le serveur lit les listes « Ouvertes », parties privées en attente et « En cours » en UNE requête (`_serveur_accueil`, voir `sql/12_serveur_accueil.sql`) à chaque signal « salon » et toutes les 20 s tant qu'un téléphone regarde, et envoie `{t:'accueil', d:{ouvertes, privees, en_cours}}` aux abonnés quand elles changent (spectateurs à jour depuis sa mémoire). Les téléphones n'appellent plus Supabase pour ces listes.
+
 ## Ce qu'il ne fait pas (volontairement)
 
 - Il **ne recopie aucune règle** du Ludo : les règles, le hasard du dé, les mises, les gains et les tournois restent dans Supabase.

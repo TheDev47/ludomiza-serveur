@@ -370,6 +370,7 @@ function ouvrirSession(uid, jeton = jetonDe(uid)) {
       if (m.t === 'refus') { s.refus = m.raison; ok(s); }
       if (m.t === 'signaux') s.signaux.push(...m.liste);
       if (m.t === 'en_ligne') s.enLigne = m.ids;
+      if (m.t === 'accueil') { s.accueil = m.d; s.nbAccueil = (s.nbAccueil || 0) + 1; }
     });
   });
 }
@@ -435,6 +436,33 @@ test('ligne directe : « qui est en ligne ? » ne répond que pour les sessions 
   await attendre(() => sa.enLigne, 2000);
   assert.deepEqual(sa.enLigne, [a]);
   sa.ws.close();
+});
+
+test('accueil partagé : les abonnés reçoivent les listes, mises à jour au signal « salon »', async () => {
+  const [a, b, c] = await creerJoueurs(bd.su, 3);
+  const [sa, sb, sc] = await Promise.all([ouvrirSession(a), ouvrirSession(b), ouvrirSession(c)]);
+  sa.ws.send(JSON.stringify({ t: 'accueil', on: true }));
+  sb.ws.send(JSON.stringify({ t: 'accueil', on: true }));
+  await attendre(() => sa.accueil && sb.accueil, 3000);
+  assert.ok(Array.isArray(sa.accueil.ouvertes) && Array.isArray(sa.accueil.en_cours) && Array.isArray(sa.accueil.privees));
+  const t0 = Date.now();
+  const { rows } = await bd.su.query(`insert into games (code, host_id, mise, max_players, mode) values ('ACC001', $1, 100, 2, 'fast') returning id`, [a]);
+  const g = rows[0].id;
+  await bd.su.query(`insert into game_players (game_id, player_id, color, play_order) values ($1, $2, 'yellow', 1)`, [g, a]);
+  await attendre(() => sa.accueil.ouvertes.some((x) => x.id === g) && sb.accueil.ouvertes.some((x) => x.id === g), 4000);
+  console.log(`  nouvelle partie dans l'accueil partagé en ${Date.now() - t0} ms`);
+  const partie = sb.accueil.ouvertes.find((x) => x.id === g);
+  assert.equal(partie.host_id, a);
+  assert.equal(partie.game_players[0].count, 1);
+  assert.ok(!sc.accueil, 'pas abonné : rien reçu');
+  // désabonné : plus rien
+  sb.ws.send(JSON.stringify({ t: 'accueil', on: false }));
+  await new Promise((r) => setTimeout(r, 300));
+  const avant = sb.nbAccueil;
+  await bd.su.query(`delete from games where id = $1`, [g]);
+  await attendre(() => !sa.accueil.ouvertes.some((x) => x.id === g), 4000);
+  assert.equal(sb.nbAccueil, avant, 'désabonné : plus de liste');
+  sa.ws.close(); sb.ws.close(); sc.ws.close();
 });
 
 test('sûreté : un journal de signaux en panne ne bloque jamais une transaction', async () => {
