@@ -145,7 +145,30 @@ export function creerServeur({
   // notés en UNE requête pour tous les joueurs qui ont l'appli ouverte et à
   // l'écran. Les téléphones n'ont plus à appeler noter_vu / salle_present.
   let presenceEnPauseJusqua = 0;
+  // Spectateurs (0.16.0) : nombre de personnes qui regardent chaque partie, noté
+  // dans la base (au rythme de la présence, seulement quand ça change, et au moins
+  // toutes les 2 min) pour la liste « En cours » de l'accueil.
+  let spectateursNotes = '';
+  let spectateursNotesLe = 0;
+  let spectateursEnPauseJusqua = 0;
+  async function noterSpectateurs() {
+    if (!base.spectateurs || Date.now() < spectateursEnPauseJusqua) return;
+    const n = {};
+    for (const [id, p] of parties) { const k = nbSpectateurs(p); if (k > 0) n[id] = k; }
+    const cle = JSON.stringify(n);
+    if (cle === spectateursNotes && Date.now() - spectateursNotesLe < 120_000) return;
+    try {
+      await base.spectateurs(n);
+      spectateursNotes = cle; spectateursNotesLe = Date.now();
+    } catch (e) {
+      stats.erreursBase++;
+      spectateursEnPauseJusqua = Date.now() + 5 * 60_000;
+      journal.error('[spectateurs]', e?.message ?? e);
+    }
+  }
+
   async function noterPresence() {
+    noterSpectateurs();
     if (Date.now() < presenceEnPauseJusqua || sessions.size === 0) return;
     const ids = [];
     for (const [uid, set] of sessions) {
@@ -305,8 +328,11 @@ export function creerServeur({
   function nbSpectateurs(p) {
     return new Set([...p.clients].filter((w) => w.readyState === 1 && w.uid && w.spectateur).map((w) => w.uid)).size;
   }
+  let minuteurSpectateurs = null;
   function diffuserPresence(p) {
     diffuser(p, { t: 'presence', partie: p.id, connectes: connectes(p), spectateurs: nbSpectateurs(p) });
+    // le nombre de spectateurs est noté dans la base peu après (regroupé sur 3 s)
+    if (!minuteurSpectateurs) minuteurSpectateurs = setTimeout(() => { minuteurSpectateurs = null; noterSpectateurs(); }, 3000);
   }
 
   // Réaction d'un spectateur (message tout prêt) : relayée à toute la table,
@@ -864,6 +890,7 @@ export function creerServeur({
       clearInterval(minuterieSondage);
       clearInterval(minuterieSignaux);
       clearInterval(minuteriePresence);
+      clearTimeout(minuteurSpectateurs);
       for (const p of parties.values()) clearTimeout(p.minuterie);
       for (const ws of wss.clients) ws.terminate();
       await new Promise((ok) => wss.close(() => ok()));

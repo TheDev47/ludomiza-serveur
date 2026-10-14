@@ -11,6 +11,8 @@ Petit programme Node.js qui rend les parties en ligne fluides.
 
 - Il tient une **ligne directe** avec chaque téléphone ouvert : une fois par seconde, il lit le journal des signaux de la base (`_serveur_evenements`, voir `sql/04_serveur_signaux.sql`) et prévient chaque joueur de ce qu'il doit relire. L'appli n'a alors plus besoin du temps réel de Supabase, limité en formule gratuite (200 connexions simultanées).
 
+- **Spectateurs (0.16.0)** : le nombre de personnes qui regardent chaque partie est noté dans la base (`_serveur_spectateurs`, voir `sql/10_serveur_spectateurs.sql`) quand il change (regroupé sur 3 s) et au moins toutes les 2 min. L'accueil l'affiche (« 👁 N ») dans la liste « En cours ».
+
 ## Ce qu'il ne fait pas (volontairement)
 
 - Il **ne recopie aucune règle** du Ludo : les règles, le hasard du dé, les mises, les gains et les tournois restent dans Supabase.

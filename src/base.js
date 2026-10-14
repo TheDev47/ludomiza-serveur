@@ -62,6 +62,10 @@ export function creerBase(adresse, { ssl, max = 8 } = {}) {
       const r = await pool.query('select public._serveur_presence($1::uuid[]) as n', [ids]);
       return r.rows[0]?.n ?? 0;
     },
+    // Spectateurs de chaque partie { idPartie: nombre } (sql/10_serveur_spectateurs.sql).
+    async spectateurs(n) {
+      await pool.query('select public._serveur_spectateurs($1::jsonb)', [JSON.stringify(n)]);
+    },
     // Chat : fin de la suspension en cours (Date) ou null ; suspendre 24 h (sql/08_serveur_chat.sql).
     async chatEtat(joueur) {
       const r = await pool.query('select public._serveur_chat_etat($1::uuid) as j', [joueur]);
