@@ -87,6 +87,7 @@ export function creerServeur({
   maxMessagesParSeconde = 30,
   signauxMs = 1000,
   presenceMs = 30_000,
+  minuteriesMs = 2000, // (0.17.0) fin des parties chrono + départ des tournois ; 0 = désactivé
   journal = console,
   archiveChat = null, // (0.13.0) archive du chat sur disque, voir src/archiveChat.js
 } = {}) {
@@ -164,6 +165,27 @@ export function creerServeur({
       stats.erreursBase++;
       spectateursEnPauseJusqua = Date.now() + 5 * 60_000;
       journal.error('[spectateurs]', e?.message ?? e);
+    }
+  }
+
+  // Minuteries de la base (0.17.0) : fin des parties chrono à l'heure et départ des
+  // tournois, appelées ici toutes les 2 s au lieu de tâches pg_cron toutes les 2 et 5 s
+  // (chaque exécution pg_cron écrit deux lignes de journal chez Supabase). Les tâches
+  // pg_cron restent en filet de sécurité, plus espacées, si ce serveur s'arrête.
+  let minuteriesEnCours = false;
+  let minuteriesEnPauseJusqua = 0;
+  async function lancerMinuteries() {
+    if (!base.minuteries || minuteriesEnCours || Date.now() < minuteriesEnPauseJusqua) return;
+    minuteriesEnCours = true;
+    try {
+      await base.minuteries();
+      stats.minuteries = (stats.minuteries || 0) + 1;
+    } catch (e) {
+      stats.erreursBase++;
+      minuteriesEnPauseJusqua = Date.now() + 60_000;
+      journal.error('[minuteries]', e?.message ?? e);
+    } finally {
+      minuteriesEnCours = false;
     }
   }
 
@@ -872,6 +894,7 @@ export function creerServeur({
   let minuterieSondage = null;
   let minuterieSignaux = null;
   let minuteriePresence = null;
+  let minuterieMinuteries = null;
 
   return {
     parties,
@@ -883,6 +906,7 @@ export function creerServeur({
       await lireSignaux();   // point de départ du journal
       minuterieSignaux = setInterval(lireSignaux, signauxMs);
       minuteriePresence = setInterval(noterPresence, presenceMs);
+      if (minuteriesMs > 0) minuterieMinuteries = setInterval(lancerMinuteries, minuteriesMs);
       return serveurHttp.address().port;
     },
     async arreter() {
@@ -890,6 +914,7 @@ export function creerServeur({
       clearInterval(minuterieSondage);
       clearInterval(minuterieSignaux);
       clearInterval(minuteriePresence);
+      clearInterval(minuterieMinuteries);
       clearTimeout(minuteurSpectateurs);
       for (const p of parties.values()) clearTimeout(p.minuterie);
       for (const ws of wss.clients) ws.terminate();

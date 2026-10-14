@@ -13,6 +13,8 @@ Petit programme Node.js qui rend les parties en ligne fluides.
 
 - **Spectateurs (0.16.0)** : le nombre de personnes qui regardent chaque partie est noté dans la base (`_serveur_spectateurs`, voir `sql/10_serveur_spectateurs.sql`) quand il change (regroupé sur 3 s) et au moins toutes les 2 min. L'accueil l'affiche (« 👁 N ») dans la liste « En cours ».
 
+- **Minuteries (0.17.0)** : toutes les 2 s, il appelle `_serveur_minuteries` (fin des parties chrono à l'heure + départ des tournois, voir `sql/11_serveur_minuteries.sql`). Les tâches pg_cron équivalentes ne passent plus que toutes les 30 s, en filet de sécurité : chaque exécution pg_cron écrit deux lignes de journal chez Supabase (quota « Log Ingestion »).
+
 ## Ce qu'il ne fait pas (volontairement)
 
 - Il **ne recopie aucune règle** du Ludo : les règles, le hasard du dé, les mises, les gains et les tournois restent dans Supabase.

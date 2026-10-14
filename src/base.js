@@ -62,6 +62,11 @@ export function creerBase(adresse, { ssl, max = 8 } = {}) {
       const r = await pool.query('select public._serveur_presence($1::uuid[]) as n', [ids]);
       return r.rows[0]?.n ?? 0;
     },
+    // Fin des parties chrono + départ des tournois (sql/11_serveur_minuteries.sql).
+    async minuteries() {
+      const r = await pool.query('select public._serveur_minuteries() as r');
+      return r.rows[0]?.r ?? null;
+    },
     // Spectateurs de chaque partie { idPartie: nombre } (sql/10_serveur_spectateurs.sql).
     async spectateurs(n) {
       await pool.query('select public._serveur_spectateurs($1::jsonb)', [JSON.stringify(n)]);
