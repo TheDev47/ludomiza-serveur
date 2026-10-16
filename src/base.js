@@ -77,6 +77,10 @@ export function creerBase(adresse, { ssl, max = 8 } = {}) {
       await pool.query('select public._serveur_spectateurs($1::jsonb)', [JSON.stringify(n)]);
     },
     // Chat : fin de la suspension en cours (Date) ou null ; suspendre 24 h (sql/08_serveur_chat.sql).
+    async peutRegarder(partie, joueur) {
+      const r = await pool.query('select public._serveur_peut_regarder($1::uuid, $2::uuid) as ok', [partie, joueur]);
+      return r.rows[0]?.ok === true;
+    },
     async chatEtat(joueur) {
       const r = await pool.query('select public._serveur_chat_etat($1::uuid) as j', [joueur]);
       return r.rows[0]?.j ?? null;

@@ -452,6 +452,8 @@ export function creerServeur({
   async function relayerChat(ws, m) {
     const p = ws.partie;
     if (!p || !ws.uid) return;
+    // (0.19.0) Pas de chat dans une partie de tournoi : rien ne doit déconcentrer les joueurs
+    if (p.etat?.game?.tournoi_id) { envoyer(ws, { t: 'chat_refus', raison: 'tournoi' }); return; }
     const t = Date.now();
     if (ws.dernierChat && t - ws.dernierChat < 1000) { envoyer(ws, { t: 'chat_refus', raison: 'trop_vite' }); return; }
     if (typeof m.texte !== 'string' || !m.texte.trim()) return;
@@ -661,6 +663,17 @@ export function creerServeur({
       envoyer(ws, { t: 'refus', raison: 'pas_spectateur' });
       ws.close(4003, 'table');
       return;
+    }
+    // (0.19.0) Table de tournoi : un tournoi LudoMiza se regarde librement ;
+    // un tournoi privé seulement avec le code (ou en y jouant / en l'organisant).
+    if (spectateur && e.game.tournoi_id) {
+      let ok = false;
+      try { ok = await base.peutRegarder(m.partie, uid); } catch (err) { journal.error('[spectateur]', err?.message ?? err); }
+      if (!ok) {
+        envoyer(ws, { t: 'refus', raison: 'code_requis' });
+        ws.close(4003, 'table');
+        return;
+      }
     }
     if (!assis && !spectateur && e.game.status === 'playing') {
       envoyer(ws, { t: 'refus', raison: 'pas_a_la_table' });
