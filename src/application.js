@@ -468,7 +468,9 @@ export function creerServeur({
         let fin = t + 24 * 3600_000;
         try { const d = await base.chatSuspendre(ws.uid, p.id, m.texte.slice(0, 300), v.raison); if (d) fin = Date.parse(d); }
         catch (e) { journal.error('[chat]', e?.message ?? e); }
-        suspensions.set(ws.uid, { jusqua: fin, fin: fin });
+        // (0.19.1) Cache de 5 min seulement (et non jusqu'à la fin) : une suspension levée par la régie
+        // est prise en compte en quelques minutes, sans redémarrer le serveur.
+        suspensions.set(ws.uid, { jusqua: fin, fin: Date.now() + 5 * 60_000 });
         stats.chatSuspensions = (stats.chatSuspensions || 0) + 1;
         envoyer(ws, { t: 'chat_refus', raison: v.raison, suspension: true, jusqua: new Date(fin).toISOString() });
       } else if (v.raison !== 'vide') {
