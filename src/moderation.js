@@ -1,7 +1,7 @@
 // Modération du chat des parties : vérifié sur le serveur de jeu, AVANT tout envoi.
 //
 //   verifierMessage(texte, memoire) -> { ok, texte, raison?, sanction? }
-//     ok:false + sanction:'suspension' : numéro de téléphone (chat suspendu 24 h)
+//     ok:false + sanction:'suspension' : numéro de téléphone (chat suspendu 24 h) — sauf options.numerosAutorises
 //     ok:false sans sanction           : lien ou adresse e-mail (message refusé)
 //     ok:true                          : texte à diffuser (insultes graves masquées par ***)
 //
@@ -228,7 +228,8 @@ export function ressembleAUnNumero(suite, groupes = []) {
  * @param texte   message brut
  * @param memoire objet propre à (partie, joueur), gardé par l'appelant : { chiffres, a }
  */
-export function verifierMessage(texte, memoire = {}, maintenant = Date.now()) {
+// (0.20.0) options.numerosAutorises : les numéros de téléphone passent (ni refus ni suspension).
+export function verifierMessage(texte, memoire = {}, maintenant = Date.now(), options = {}) {
   let brut = String(texte ?? '').replace(/\s+/g, ' ').trim();
   if (!brut) return { ok: false, raison: 'vide' };
   if (brut.length > LONGUEUR_MAX) brut = brut.slice(0, LONGUEUR_MAX);
@@ -237,6 +238,11 @@ export function verifierMessage(texte, memoire = {}, maintenant = Date.now()) {
   const { longue, debut, fin } = suitesDeChiffres(brut);
 
   const groupes = retirerMontants(n).match(/\d+/g) || [];
+  if (options.numerosAutorises) {
+    if (LIEN.test(n) || EMAIL.test(n)) return { ok: false, raison: 'lien' };
+    const { texte: propre, masque } = masquerInsultes(brut);
+    return { ok: true, texte: propre, masque };
+  }
   // 1. Numéro dans le message
   if (ressembleAUnNumero(longue, groupes)) return { ok: false, raison: 'numero', sanction: 'suspension' };
   // 2. Mot « contact » + au moins 4 chiffres : c'est une tentative

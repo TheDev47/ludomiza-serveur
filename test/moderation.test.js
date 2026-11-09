@@ -52,3 +52,9 @@ test('insultes graves masquées', () => {
   assert.equal(verifierMessage('passe le dé', {}).texte, 'passe le dé');
   assert.equal(masquerInsultes('Bien joué').masque, false);
 });
+
+test('numéros autorisés (0.20.0) : le numéro passe, les liens restent refusés', () => {
+  assert.equal(verifierMessage('voici mon zap 653388876', {}, Date.now(), { numerosAutorises: true }).ok, true);
+  assert.equal(verifierMessage('Six cinq trois trois huit huit huit sept six.', {}, Date.now(), { numerosAutorises: true }).ok, true);
+  assert.equal(verifierMessage('va sur exemple.com', {}, Date.now(), { numerosAutorises: true }).raison, 'lien');
+});

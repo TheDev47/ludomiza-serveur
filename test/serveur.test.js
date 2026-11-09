@@ -11,6 +11,8 @@ import path from 'node:path';
 import {
   creerBaseDeTest, creerJoueurs, creerPartie, verifierJetonDeTest, Robot, attendre, jetonDe,
 } from './aide.js';
+// Le test du blocage des numéros garde le chemin « bloqués » (autorisés par défaut depuis 0.20.0).
+process.env.LUDOMIZA_CHAT_NUMEROS = 'bloques';
 
 let bd, base, serveur, url, dossierChat;
 

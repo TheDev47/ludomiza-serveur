@@ -462,7 +462,9 @@ export function creerServeur({
     if (jusqua) { envoyer(ws, { t: 'chat_refus', raison: 'suspendu', jusqua: new Date(jusqua).toISOString() }); return; }
     let mem = p.memoiresChat.get(ws.uid);
     if (!mem) { mem = {}; p.memoiresChat.set(ws.uid, mem); }
-    const v = verifierMessage(m.texte.slice(0, LONGUEUR_MAX * 2), mem, t);
+    // (0.20.0) Numéros de téléphone autorisés dans le chat (LUDOMIZA_CHAT_NUMEROS=bloques pour revenir en arrière)
+    const v = verifierMessage(m.texte.slice(0, LONGUEUR_MAX * 2), mem, t,
+      { numerosAutorises: process.env.LUDOMIZA_CHAT_NUMEROS !== 'bloques' });
     if (!v.ok) {
       if (v.sanction === 'suspension') {
         let fin = t + 24 * 3600_000;
